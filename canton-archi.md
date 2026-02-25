@@ -29,7 +29,45 @@ At a high level, Canton's architectural elements are:
 - **Applications and sub-networks**: Daml-based business applications and purpose-specific domains deployed by institutions.
 - **Ecosystem services**: Custodians, wallets, interoperability providers, and other infrastructure integrating with Canton assets.[10][12][13][11][1][6]
 
-> **Diagram**: [diagrams/01-high-level-topology.mmd](diagrams/01-high-level-topology.mmd) — Network topology showing apps, validators, domains, and the Global Synchronizer.
+```mermaid
+graph TB
+    subgraph "Canton Network — High-Level Topology"
+        subgraph "Application Layer"
+            A1["App A<br/>(Tokenization)"]
+            A2["App B<br/>(Settlement)"]
+            A3["App C<br/>(Collateral Mgmt)"]
+        end
+
+        subgraph "Validator / Participant Nodes"
+            V1["Validator 1<br/>hosts: Bank A parties"]
+            V2["Validator 2<br/>hosts: Bank B parties"]
+            V3["Validator 3<br/>hosts: Custodian parties"]
+        end
+
+        subgraph "Synchronization Layer"
+            D1["Domain 1<br/>(Permissioned)"]
+            D2["Domain 2<br/>(Permissioned)"]
+            GS["Global Synchronizer<br/>(Cross-Domain)"]
+        end
+
+        A1 --> V1
+        A2 --> V2
+        A3 --> V3
+        V1 <-->|"encrypted<br/>envelopes"| D1
+        V2 <-->|"encrypted<br/>envelopes"| D1
+        V2 <-->|"encrypted<br/>envelopes"| D2
+        V3 <-->|"encrypted<br/>envelopes"| D2
+        D1 <-->|"cross-domain<br/>coordination"| GS
+        D2 <-->|"cross-domain<br/>coordination"| GS
+    end
+
+    style GS fill:#f9d71c,stroke:#333,color:#000
+    style D1 fill:#4a90d9,stroke:#333,color:#fff
+    style D2 fill:#4a90d9,stroke:#333,color:#fff
+    style V1 fill:#6cb85c,stroke:#333,color:#fff
+    style V2 fill:#6cb85c,stroke:#333,color:#fff
+    style V3 fill:#6cb85c,stroke:#333,color:#fff
+```
 
 ## 2. Core Network Components
 
@@ -106,7 +144,28 @@ A synchronization domain is internally composed of three key entities that work 
 - **Mediator**: Coordinates the confirmation protocol (Canton's two-phase commit). It collects confirmation and rejection responses from participants, computes the transaction result, and distributes the final verdict. The mediator sees only encrypted metadata — it knows which participants are involved but not what the transaction contains.
 - **Topology Manager**: Manages the identity-to-key mappings and domain membership. It maintains the set of registered participants, their signing and encryption keys, and domain-level configuration such as permissioning policies.
 
-> **Diagram**: [diagrams/02-domain-subcomponents.mmd](diagrams/02-domain-subcomponents.mmd) — Sequencer, Mediator, and Topology Manager interactions with participants.
+```mermaid
+graph TB
+    subgraph "Synchronization Domain"
+        direction TB
+        TM["Topology Manager<br/>─────────────<br/>Identity mappings<br/>Domain membership<br/>Key management<br/>Permissioning"]
+        SEQ["Sequencer<br/>─────────────<br/>Total-order multicast<br/>Timestamping<br/>Message delivery"]
+        MED["Mediator<br/>─────────────<br/>Confirmation protocol<br/>Collect approvals/rejections<br/>Compute & broadcast verdict"]
+
+        TM --- SEQ
+        TM --- MED
+        SEQ --- MED
+    end
+
+    P1["Participant A"] <-->|"encrypted<br/>messages"| SEQ
+    P2["Participant B"] <-->|"encrypted<br/>messages"| SEQ
+    P1 -.->|"confirmations"| MED
+    P2 -.->|"confirmations"| MED
+
+    style SEQ fill:#4a90d9,stroke:#333,color:#fff
+    style MED fill:#e87d3e,stroke:#333,color:#fff
+    style TM fill:#9b59b6,stroke:#333,color:#fff
+```
 
 ```mermaid
 graph TB
@@ -143,7 +202,35 @@ Control layers include:
 
 This configuration model supports institutional deployments where only vetted validators can participate in specific domains, aligning with regulatory and risk controls.
 
-> **Diagram**: [diagrams/03-permissioned-vs-open.mmd](diagrams/03-permissioned-vs-open.mmd) — Side-by-side comparison of open vs. permissioned domain access.
+```mermaid
+graph LR
+    subgraph "Open Domain"
+        O_SEQ["Sequencer<br/>(public API)"]
+        O_P1["Participant X"]
+        O_P2["Participant Y"]
+        O_P3["Any new<br/>Participant"]
+        O_P1 <--> O_SEQ
+        O_P2 <--> O_SEQ
+        O_P3 -.->|"auto-join"| O_SEQ
+    end
+
+    subgraph "Permissioned Domain"
+        P_TM["Topology Manager<br/>allow-list"]
+        P_SEQ["Sequencer<br/>(VPN / firewall)"]
+        P_P1["Vetted<br/>Participant A"]
+        P_P2["Vetted<br/>Participant B"]
+        P_P3["Unvetted<br/>Participant"]
+        P_TM -->|"approves"| P_P1
+        P_TM -->|"approves"| P_P2
+        P_P3 -.-x|"rejected"| P_TM
+        P_P1 <--> P_SEQ
+        P_P2 <--> P_SEQ
+    end
+
+    style P_P3 fill:#e74c3c,stroke:#333,color:#fff
+    style O_P3 fill:#2ecc71,stroke:#333,color:#fff
+    style P_TM fill:#9b59b6,stroke:#333,color:#fff
+```
 
 ## 3. Transaction Lifecycle and Confirmation Protocol
 
@@ -164,7 +251,43 @@ The protocol proceeds through the following phases:
 6. The mediator collects all responses. If all confirming parties approve, the mediator issues an **approval verdict**. If any party rejects, a **rejection verdict** is issued.
 7. The verdict is distributed through the sequencer to all participants, who then either commit the transaction (updating their active contract sets) or discard it.
 
-> **Diagram**: [diagrams/04-confirmation-protocol.mmd](diagrams/04-confirmation-protocol.mmd) — Sequence diagram of the full 2PC confirmation flow.
+```mermaid
+sequenceDiagram
+    participant Sub as Submitting<br/>Participant
+    participant Seq as Sequencer
+    participant P_A as Participant A<br/>(Stakeholder)
+    participant P_B as Participant B<br/>(Stakeholder)
+    participant Med as Mediator
+
+    Note over Sub: Construct transaction tree<br/>Decompose into encrypted views
+
+    Sub->>Seq: Confirmation Request<br/>(encrypted views)
+    Seq->>Seq: Timestamp & order
+
+    par Distribute to stakeholders
+        Seq->>P_A: Encrypted views<br/>(A can decrypt its views)
+        Seq->>P_B: Encrypted views<br/>(B can decrypt its views)
+        Seq->>Med: Encrypted metadata
+    end
+
+    Note over P_A: Decrypt views, validate<br/>authorization & consistency
+    Note over P_B: Decrypt views, validate<br/>authorization & consistency
+
+    P_A->>Seq: Confirmation Response (approve ✓)
+    P_B->>Seq: Confirmation Response (approve ✓)
+    Seq->>Med: Forward responses
+
+    Note over Med: All approved →<br/>compute approval verdict
+
+    Med->>Seq: Approval Verdict
+    par Distribute verdict
+        Seq->>Sub: Verdict: APPROVED
+        Seq->>P_A: Verdict: APPROVED
+        Seq->>P_B: Verdict: APPROVED
+    end
+
+    Note over Sub,P_B: All participants commit transaction<br/>and update active contract sets
+```
 
 ```mermaid
 sequenceDiagram
@@ -212,7 +335,46 @@ A critical aspect of Canton's privacy model is how transactions are decomposed i
 - Views are encrypted using the recipient parties' public keys, so even the sequencer and mediator cannot read them.
 - A party who is a stakeholder on a top-level action but not on a nested subaction will see a **blinded hash** in place of the subaction, preserving the tree structure without revealing hidden content.
 
-> **Diagram**: [diagrams/05-transaction-views.mmd](diagrams/05-transaction-views.mmd) — How a transaction tree is projected into different views per party (with blinded nodes).
+```mermaid
+graph TB
+    subgraph "Full Transaction Tree (Submitter's View)"
+        TX["Transaction Root"]
+        A1["Action 1: Transfer<br/>parties: Alice, Bob"]
+        A2["Action 2: Create<br/>parties: Bob, Charlie"]
+        A1_1["Subaction 1.1: Archive<br/>parties: Alice"]
+        A1_2["Subaction 1.2: Create<br/>parties: Alice, Bob"]
+
+        TX --> A1
+        TX --> A2
+        A1 --> A1_1
+        A1 --> A1_2
+    end
+
+    subgraph "Alice's Projected View"
+        TX_A["Transaction Root"]
+        A1_A["Action 1: Transfer ✓"]
+        A2_A["Action 2: ████ (blinded)"]
+        A1_1_A["Subaction 1.1: Archive ✓"]
+        A1_2_A["Subaction 1.2: Create ✓"]
+
+        TX_A --> A1_A
+        TX_A --> A2_A
+        A1_A --> A1_1_A
+        A1_A --> A1_2_A
+    end
+
+    subgraph "Charlie's Projected View"
+        TX_C["Transaction Root"]
+        A1_C["Action 1: ████ (blinded)"]
+        A2_C["Action 2: Create ✓"]
+
+        TX_C --> A1_C
+        TX_C --> A2_C
+    end
+
+    style A2_A fill:#999,stroke:#333,color:#fff
+    style A1_C fill:#999,stroke:#333,color:#fff
+```
 
 ### 3.3 Conflict Detection
 
@@ -224,7 +386,25 @@ Canton uses a UTXO-like model for conflict detection. Since active contracts can
 - The mediator aggregates responses — a single rejection from a confirming party triggers a rejection verdict for the entire transaction.
 - The sequencer's total ordering ensures that conflicting transactions are processed in a deterministic sequence, so all honest participants reach the same conflict-detection outcome.
 
-> **Diagram**: [diagrams/06-conflict-detection.mmd](diagrams/06-conflict-detection.mmd) — Two competing transactions on the same contract, showing approval/rejection outcomes.
+```mermaid
+graph TD
+    subgraph "Conflict Detection Scenario"
+        C["Contract X<br/>(active)"]
+
+        TX1["Transaction 1<br/>consumes Contract X"]
+        TX2["Transaction 2<br/>consumes Contract X"]
+
+        C --> TX1
+        C --> TX2
+
+        TX1 -->|"submitted first<br/>(earlier timestamp)"| R1["✅ APPROVED<br/>Contract X → consumed"]
+        TX2 -->|"submitted second<br/>(later timestamp)"| R2["❌ REJECTED<br/>Contract X already consumed"]
+    end
+
+    style R1 fill:#2ecc71,stroke:#333,color:#fff
+    style R2 fill:#e74c3c,stroke:#333,color:#fff
+    style C fill:#f9d71c,stroke:#333,color:#000
+```
 
 ## 4. Interoperability and Global Architecture
 
@@ -234,7 +414,50 @@ The Canton introduction explicitly describes the protocol as connecting differen
 
 The Canton whitepaper explains that contracts are associated with domains that act as the authority for ordering actions on those contracts, and that contracts can be transferred between domains by changing which domain is responsible for ordering their actions. Cross-domain transactions are allowed when there exists a single domain to which all participants in a transaction are connected, preserving atomicity while maintaining resilience and privacy.[7]
 
-> **Diagram**: [diagrams/07-virtual-global-ledger.mmd](diagrams/07-virtual-global-ledger.mmd) — Multi-domain virtual ledger with participants connected across domains.
+```mermaid
+graph TB
+    subgraph "Virtual Global Ledger"
+        direction TB
+
+        subgraph "Domain Alpha"
+            DA_S["Sequencer α"]
+            CA1(["Contract 1"])
+            CA2(["Contract 2"])
+            CA1 -.-> DA_S
+            CA2 -.-> DA_S
+        end
+
+        subgraph "Domain Beta"
+            DB_S["Sequencer β"]
+            CB1(["Contract 3"])
+            CB2(["Contract 4"])
+            CB1 -.-> DB_S
+            CB2 -.-> DB_S
+        end
+
+        subgraph "Global Synchronizer"
+            GS_S["Sequencer (Global)"]
+        end
+
+        P1["Participant 1<br/>connected to: α, β"]
+        P2["Participant 2<br/>connected to: α"]
+        P3["Participant 3<br/>connected to: β"]
+
+        P1 <--> DA_S
+        P1 <--> DB_S
+        P2 <--> DA_S
+        P3 <--> DB_S
+
+        DA_S <-->|"contract<br/>transfer"| GS_S
+        DB_S <-->|"contract<br/>transfer"| GS_S
+    end
+
+    style GS_S fill:#f9d71c,stroke:#333,color:#000
+    style CA1 fill:#fff,stroke:#4a90d9
+    style CA2 fill:#fff,stroke:#4a90d9
+    style CB1 fill:#fff,stroke:#e87d3e
+    style CB2 fill:#fff,stroke:#e87d3e
+```
 
 ### 4.2 Cross-Domain Contract Transfers
 
@@ -247,7 +470,32 @@ The transfer proceeds in two steps:
 
 The Global Synchronizer can facilitate this coordination, ensuring consistent ordering across domains.
 
-> **Diagram**: [diagrams/08-cross-domain-transfer.mmd](diagrams/08-cross-domain-transfer.mmd) — Sequence diagram of the transfer-out/transfer-in protocol.
+```mermaid
+sequenceDiagram
+    participant P as Participant<br/>(initiator)
+    participant D1 as Domain α<br/>(source)
+    participant D2 as Domain β<br/>(target)
+
+    Note over P: Contract X is active on Domain α<br/>Needs to move to Domain β
+
+    rect rgb(240, 248, 255)
+        Note right of D1: Transfer-Out Phase
+        P->>D1: Transfer-Out request<br/>(Contract X → Domain β)
+        D1->>D1: Timestamp & record<br/>Contract X = transferred-out
+        D1->>P: Transfer-Out confirmed
+    end
+
+    Note over P: Carries transfer proof<br/>to target domain
+
+    rect rgb(255, 248, 240)
+        Note right of D2: Transfer-In Phase
+        P->>D2: Transfer-In request<br/>(Contract X + transfer proof)
+        D2->>D2: Validate proof & timestamp<br/>Contract X = active
+        D2->>P: Transfer-In confirmed
+    end
+
+    Note over P: Contract X now active<br/>on Domain β
+```
 
 ```mermaid
 sequenceDiagram
@@ -293,7 +541,40 @@ Canton ecosystem documentation notes that the network is seeing integration from
 
 In addition, providers such as Ownera and other network-as-a-service firms offer interoperability routing, node hosting, and connectivity services that help financial institutions integrate Canton-based assets into their broader infrastructure.[14][11]
 
-> **Diagram**: [diagrams/09-external-interop.mmd](diagrams/09-external-interop.mmd) — Canton connected to external ecosystems via bridge providers.
+```mermaid
+graph LR
+    subgraph "Canton Network"
+        CN_D1["Domain A<br/>(Tokenization)"]
+        CN_D2["Domain B<br/>(Settlement)"]
+        CN_GS["Global<br/>Synchronizer"]
+        CN_D1 <--> CN_GS
+        CN_D2 <--> CN_GS
+    end
+
+    subgraph "External Ecosystems"
+        ETH["Ethereum"]
+        SOL["Solana"]
+        OTHER["Other L1/L2s"]
+    end
+
+    subgraph "Interoperability Providers"
+        CL["Chainlink<br/>(Data feeds, CCIP)"]
+        LZ["LayerZero<br/>(Cross-chain messaging)"]
+        WH["Wormhole<br/>(Asset bridging)"]
+    end
+
+    CN_GS <--> CL
+    CN_GS <--> LZ
+    CN_GS <--> WH
+    CL <--> ETH
+    LZ <--> SOL
+    WH <--> OTHER
+
+    style CN_GS fill:#f9d71c,stroke:#333,color:#000
+    style CL fill:#375bd2,stroke:#333,color:#fff
+    style LZ fill:#6c5ce7,stroke:#333,color:#fff
+    style WH fill:#00b894,stroke:#333,color:#fff
+```
 
 ## 5. Ecosystem and Participant Roles
 
@@ -314,7 +595,47 @@ Ecosystem materials categorize participants into several broad roles:[12][1][10]
 
 Concrete examples include major global banks (such as Goldman Sachs, Bank of America, Citi, JP Morgan, BNP Paribas, HSBC, BNY Mellon, and State Street) participating as application providers, validators, or custodians in the ecosystem. Other participants include exchanges, digital asset custodians like BitGo, and consulting firms supporting application design and validation.[10][12][14][11][8]
 
-> **Diagram**: [diagrams/10-ecosystem-roles.mmd](diagrams/10-ecosystem-roles.mmd) — Ecosystem role hierarchy: governance, app providers, infrastructure, services, end users.
+```mermaid
+graph TB
+    subgraph "Canton Ecosystem Roles"
+        direction TB
+
+        subgraph "Governance"
+            CF["Canton Foundation"]
+            SV["Super Validators<br/>(governance + validation)"]
+            CF --> SV
+        end
+
+        subgraph "Application Providers"
+            AP1["Tokenization Platforms"]
+            AP2["Settlement Systems"]
+            AP3["Collateral Mgmt"]
+            AP4["Trading Venues"]
+        end
+
+        subgraph "Infrastructure Providers"
+            IP1["Validators<br/>(600+)"]
+            IP2["Domain Operators"]
+            IP3["Node Hosting<br/>Providers"]
+        end
+
+        subgraph "Service Providers"
+            SP1["Custodians<br/>(BitGo, etc.)"]
+            SP2["KYC / Compliance"]
+            SP3["Interoperability<br/>(Chainlink, LayerZero)"]
+        end
+
+        subgraph "End Users"
+            EU["Banks · Asset Managers · Corporates"]
+        end
+
+        SV --> IP1
+        AP1 --> IP1
+        AP2 --> IP1
+        SP1 --> EU
+        IP1 --> EU
+    end
+```
 
 ### 5.3 Digital Asset's Role
 
@@ -371,7 +692,26 @@ Canton's synchronization domain architecture is designed to be agnostic to speci
 
 This flexibility allows domain operators to choose backends that match their regulatory, operational, and performance needs, while still participating in the same Canton protocol and interoperability model.[5][3]
 
-> **Diagram**: [diagrams/11-domain-backends.mmd](diagrams/11-domain-backends.mmd) — Pluggable backend options (Postgres, Fabric, Ethereum) under the domain protocol.
+```mermaid
+graph TB
+    subgraph "Canton Domain — Backend Agnostic"
+        DOMAIN["Domain Protocol<br/>(Sequencer + Mediator + Topology Mgr)"]
+    end
+
+    subgraph "Pluggable Backends"
+        PG["PostgreSQL<br/>─────────<br/>Low latency<br/>Simple ops<br/>Single-org domains"]
+        FABRIC["Hyperledger Fabric<br/>─────────<br/>Consortium trust<br/>BFT ordering<br/>Multi-org domains"]
+        ETH["Ethereum<br/>─────────<br/>Public verifiability<br/>Decentralized trust<br/>Open domains"]
+    end
+
+    DOMAIN --> PG
+    DOMAIN --> FABRIC
+    DOMAIN --> ETH
+
+    style PG fill:#336791,stroke:#333,color:#fff
+    style FABRIC fill:#2d6b4e,stroke:#333,color:#fff
+    style ETH fill:#3c3c3d,stroke:#333,color:#fff
+```
 
 ### 6.3 Privacy and Need-to-Know Distribution
 
@@ -379,7 +719,40 @@ The Canton Network overview emphasizes that transaction data is distributed only
 
 Domains and synchronizers therefore only ever see encrypted transaction envelopes and metadata, never plaintext contract contents, while participants exchange the necessary encrypted payloads directly with each other. This architecture provides strong confidentiality while still enabling global ordering and auditability of contract lifecycles.[4][2][7][3]
 
-> **Diagram**: [diagrams/12-privacy-visibility.mmd](diagrams/12-privacy-visibility.mmd) — What each network entity (submitter, stakeholder, sequencer, mediator, non-stakeholder) can see.
+```mermaid
+graph TB
+    subgraph "What Each Entity Sees"
+        direction TB
+
+        subgraph "Submitting Participant"
+            SP["Sees: Full transaction tree<br/>(all actions & parties)"]
+        end
+
+        subgraph "Stakeholder Participant"
+            SKP["Sees: Own projected views<br/>(actions they're party to)"]
+        end
+
+        subgraph "Sequencer"
+            SEQ["Sees: Encrypted envelopes only<br/>(cannot decrypt content)"]
+        end
+
+        subgraph "Mediator"
+            MED["Sees: Encrypted metadata<br/>(knows who confirms, not what)"]
+        end
+
+        subgraph "Non-Stakeholder Participant"
+            NSP["Sees: Nothing<br/>(not notified at all)"]
+        end
+    end
+
+    SP ~~~ SKP ~~~ SEQ ~~~ MED ~~~ NSP
+
+    style SP fill:#2ecc71,stroke:#333,color:#fff
+    style SKP fill:#3498db,stroke:#333,color:#fff
+    style SEQ fill:#f39c12,stroke:#333,color:#000
+    style MED fill:#e67e22,stroke:#333,color:#fff
+    style NSP fill:#95a5a6,stroke:#333,color:#fff
+```
 
 ## 7. Daml Contract Architecture on Canton
 
@@ -429,7 +802,33 @@ graph TD
     style A2_1 fill:#e74c3c,stroke:#333,color:#fff
     style A2_2 fill:#27ae60,stroke:#333,color:#fff
 ```
-> **Diagram**: [diagrams/13-transaction-tree.mmd](diagrams/13-transaction-tree.mmd) — Detailed transaction tree showing exercise, archive, and create actions with authorizers.
+```mermaid
+graph TD
+    TX["Transaction"]
+    A1["Action 1<br/>Exercise Transfer<br/>on Contract A<br/><i>authorizers: Alice, Bob</i>"]
+    A2["Action 2<br/>Exercise Settle<br/>on Contract B<br/><i>authorizers: Bob, Charlie</i>"]
+
+    A1_1["Subaction 1.1<br/>Archive Contract A<br/><i>authorizers: Alice</i>"]
+    A1_2["Subaction 1.2<br/>Create Contract A'<br/><i>signatories: Alice, Bob</i>"]
+
+    A2_1["Subaction 2.1<br/>Archive Contract B<br/><i>authorizers: Bob</i>"]
+    A2_2["Subaction 2.2<br/>Create Contract C<br/><i>signatories: Bob, Charlie</i>"]
+
+    TX --> A1
+    TX --> A2
+    A1 --> A1_1
+    A1 --> A1_2
+    A2 --> A2_1
+    A2 --> A2_2
+
+    style TX fill:#2c3e50,stroke:#333,color:#fff
+    style A1 fill:#2980b9,stroke:#333,color:#fff
+    style A2 fill:#2980b9,stroke:#333,color:#fff
+    style A1_1 fill:#e74c3c,stroke:#333,color:#fff
+    style A1_2 fill:#27ae60,stroke:#333,color:#fff
+    style A2_1 fill:#e74c3c,stroke:#333,color:#fff
+    style A2_2 fill:#27ae60,stroke:#333,color:#fff
+```
 
 ### 7.3 Authorization Model
 
@@ -448,7 +847,26 @@ Daml templates define several party roles that determine authorization requireme
 - **Observers**: Parties who can see the contract but cannot unilaterally act on it. They are stakeholders for visibility purposes.
 - **Controllers**: Parties authorized to exercise a specific choice (action) on a contract, as defined per-choice in the template.
 
-> **Diagram**: [diagrams/14-authorization-model.mmd](diagrams/14-authorization-model.mmd) — Template structure showing signatories, observers, and choice controllers.
+```mermaid
+graph LR
+    subgraph "Daml Template: TokenTransfer"
+        direction TB
+        SIG["Signatories<br/>─────<br/>issuer, owner"]
+        OBS["Observers<br/>─────<br/>regulator"]
+        CH1["Choice: Transfer<br/>controller: owner<br/>→ archives this, creates new"]
+        CH2["Choice: Redeem<br/>controller: owner<br/>→ requires issuer approval"]
+
+        SIG --- CH1
+        SIG --- CH2
+        OBS -.->|"can see"| CH1
+        OBS -.->|"can see"| CH2
+    end
+
+    style SIG fill:#e74c3c,stroke:#333,color:#fff
+    style OBS fill:#3498db,stroke:#333,color:#fff
+    style CH1 fill:#2ecc71,stroke:#333,color:#fff
+    style CH2 fill:#2ecc71,stroke:#333,color:#fff
+```
 
 ### 7.4 Privacy Model
 
@@ -490,7 +908,31 @@ stateDiagram-v2
         (similar to a spent UTXO)
     end note
 ```
-> **Diagram**: [diagrams/15-contract-lifecycle.mmd](diagrams/15-contract-lifecycle.mmd) — State diagram showing contract states: Created, Active, Exercised, Archived, Transferred.
+```mermaid
+stateDiagram-v2
+    [*] --> Created: Create action committed
+    Created --> Active: Stored in ACS
+
+    Active --> Exercised: Choice exercised
+    Exercised --> Archived: Consuming choice<br/>(contract consumed)
+    Exercised --> Active: Non-consuming choice<br/>(contract survives)
+
+    Active --> TransferredOut: Transfer-out to Domain β
+    TransferredOut --> TransferredIn: Transfer-in on Domain β
+    TransferredIn --> Active: Active on new domain
+
+    Archived --> [*]
+
+    note right of Active
+        Contract is in the Active Contract Set (ACS)
+        and can be acted upon by authorized parties
+    end note
+
+    note right of Archived
+        Contract is permanently consumed
+        (similar to a spent UTXO)
+    end note
+```
 
 ### 7.6 Relationship Between Daml Contracts and Canton Smart Contracts
 
@@ -502,7 +944,42 @@ The relationship can be summarized as:
 - **Canton node level**: Executes Daml-defined transactions locally, checks authorization rules, constructs transaction graphs, and maintains the active contract set for hosted parties.[5][7]
 - **Synchronization level**: Orders encrypted transaction envelopes, ensures atomicity and finality, and propagates notifications in line with Daml's visibility rules.[4][2][3][7]
 
-> **Diagram**: [diagrams/16-daml-canton-relationship.mmd](diagrams/16-daml-canton-relationship.mmd) — Three-tier flow from Daml templates to Canton engine to Synchronization layer.
+```mermaid
+graph TD
+    subgraph "Daml Level"
+        T["Template Definition<br/>─────────<br/>Data fields<br/>Signatories & observers<br/>Choices (actions)<br/>Ensure clauses"]
+        I["Contract Instance<br/>─────────<br/>Unique contract ID<br/>Bound parties<br/>Active / consumed state"]
+        TX["Transaction Tree<br/>─────────<br/>Hierarchical actions<br/>Authorization per action<br/>Visibility per subtree"]
+
+        T -->|"instantiation"| I
+        I -->|"actions within tx"| TX
+    end
+
+    subgraph "Canton Node Level"
+        ENG["Protocol Engine<br/>─────────<br/>Execute Daml logic<br/>Validate authorization<br/>Construct tx tree<br/>Encrypt into views"]
+        ACS["Active Contract Set<br/>─────────<br/>Local DB (Postgres)<br/>Track active contracts<br/>Conflict detection"]
+
+        TX -->|"submit"| ENG
+        ENG -->|"commit / reject"| ACS
+    end
+
+    subgraph "Synchronization Level"
+        SEQ2["Sequencer<br/>─────────<br/>Total-order multicast<br/>Timestamp messages"]
+        MED2["Mediator<br/>─────────<br/>Collect confirmations<br/>Issue verdict"]
+
+        ENG -->|"encrypted<br/>envelopes"| SEQ2
+        SEQ2 <--> MED2
+        MED2 -->|"verdict"| ENG
+    end
+
+    style T fill:#8e44ad,stroke:#333,color:#fff
+    style I fill:#8e44ad,stroke:#333,color:#fff
+    style TX fill:#8e44ad,stroke:#333,color:#fff
+    style ENG fill:#2980b9,stroke:#333,color:#fff
+    style ACS fill:#2980b9,stroke:#333,color:#fff
+    style SEQ2 fill:#e67e22,stroke:#333,color:#fff
+    style MED2 fill:#e67e22,stroke:#333,color:#fff
+```
 
 ### 7.7 Visual Model of Daml Contracts on Canton
 
@@ -564,7 +1041,35 @@ Press releases and ecosystem communications emphasize that the Canton Network is
 
 ## 9. Summary of Key Architectural Properties
 
-> **Diagram**: [diagrams/17-architecture-mindmap.mmd](diagrams/17-architecture-mindmap.mmd) — Mind map of Canton's architectural pillars: privacy, execution, consensus, interoperability, institutional design.
+```mermaid
+mindmap
+    root((Canton<br/>Architecture))
+        Privacy
+            Need-to-know distribution
+            Encrypted envelopes on domain
+            View-based decomposition
+            Only stakeholders see plaintext
+        Execution Model
+            Daml smart contracts
+            UTXO-like active contracts
+            Hierarchical transactions
+            Language-level auth & privacy
+        Consensus
+            Two-phase confirmation protocol
+            Sequencer total ordering
+            Mediator verdict aggregation
+            Deterministic conflict detection
+        Interoperability
+            Multi-domain virtual ledger
+            Cross-domain contract transfers
+            Global Synchronizer
+            External bridges (Chainlink, etc.)
+        Institutional Design
+            Permissioned & open domains
+            Pluggable backends
+            Canton Foundation governance
+            600+ validators
+```
 
 - **Privacy-preserving virtual shared ledger**: Canton connects multiple Daml-ledgers into a global ledger where only involved parties see contract details, while infrastructure nodes see only encrypted transaction envelopes.[6][2][5][7]
 - **Separated execution and ordering**: Validator/participant nodes execute Daml contracts and maintain state, while synchronization domains and the Global Synchronizer provide ordering, finality, and interoperability.[2][4][6][3]
