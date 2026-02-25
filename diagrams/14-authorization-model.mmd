@@ -1,0 +1,18 @@
+graph LR
+    subgraph "Daml Template: TokenTransfer"
+        direction TB
+        SIG["Signatories<br/>─────<br/>issuer, owner"]
+        OBS["Observers<br/>─────<br/>regulator"]
+        CH1["Choice: Transfer<br/>controller: owner<br/>→ archives this, creates new"]
+        CH2["Choice: Redeem<br/>controller: owner<br/>→ requires issuer approval"]
+
+        SIG --- CH1
+        SIG --- CH2
+        OBS -.->|"can see"| CH1
+        OBS -.->|"can see"| CH2
+    end
+
+    style SIG fill:#e74c3c,stroke:#333,color:#fff
+    style OBS fill:#3498db,stroke:#333,color:#fff
+    style CH1 fill:#2ecc71,stroke:#333,color:#fff
+    style CH2 fill:#2ecc71,stroke:#333,color:#fff

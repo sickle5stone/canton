@@ -1,0 +1,38 @@
+Section: 7.7 Visual Model of Daml Contracts on Canton
+============================================================
+
++------------------------------------------------------+
+|                Daml Contract Template                |
+|  - Data fields                                       |
+|  - Defined actions on the contract                   |
+|  - Authorization rules (required parties)            |
+|  - Privacy rules (stakeholders)                      |
++-----------------------------+------------------------+
+                              |
+                              | Instantiation
+                              v
++------------------------------------------------------+
+|                Daml Contract Instance                |
+|  - Unique contract identifier                        |
+|  - Bound parties (stakeholders)                      |
+|  - Active / consumed state                           |
++-----------------------------+------------------------+
+                              |
+                              | Actions (within Tx)
+                              v
++------------------------------------------------------+
+|              Daml Transaction (Hierarchical)         |
+|  - List of actions and subactions on contracts       |
+|  - Required authorizers per action                   |
+|  - Visibility restricted to stakeholders             |
++-----------------------------+------------------------+
+                              |
+                              | Canton Protocol
+                              v
++------------------------------------------------------+
+|      Canton Validator Node & Synchronization Layer   |
+|  - Validates authorizations & privacy                |
+|  - Encrypts payloads, builds envelopes               |
+|  - Communicates with synchronizers for ordering      |
+|  - Updates active contract set                       |
++------------------------------------------------------+

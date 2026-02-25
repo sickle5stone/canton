@@ -1,0 +1,37 @@
+graph TB
+    subgraph "Canton Network — High-Level Topology"
+        subgraph "Application Layer"
+            A1["App A<br/>(Tokenization)"]
+            A2["App B<br/>(Settlement)"]
+            A3["App C<br/>(Collateral Mgmt)"]
+        end
+
+        subgraph "Validator / Participant Nodes"
+            V1["Validator 1<br/>hosts: Bank A parties"]
+            V2["Validator 2<br/>hosts: Bank B parties"]
+            V3["Validator 3<br/>hosts: Custodian parties"]
+        end
+
+        subgraph "Synchronization Layer"
+            D1["Domain 1<br/>(Permissioned)"]
+            D2["Domain 2<br/>(Permissioned)"]
+            GS["Global Synchronizer<br/>(Cross-Domain)"]
+        end
+
+        A1 --> V1
+        A2 --> V2
+        A3 --> V3
+        V1 <-->|"encrypted<br/>envelopes"| D1
+        V2 <-->|"encrypted<br/>envelopes"| D1
+        V2 <-->|"encrypted<br/>envelopes"| D2
+        V3 <-->|"encrypted<br/>envelopes"| D2
+        D1 <-->|"cross-domain<br/>coordination"| GS
+        D2 <-->|"cross-domain<br/>coordination"| GS
+    end
+
+    style GS fill:#f9d71c,stroke:#333,color:#000
+    style D1 fill:#4a90d9,stroke:#333,color:#fff
+    style D2 fill:#4a90d9,stroke:#333,color:#fff
+    style V1 fill:#6cb85c,stroke:#333,color:#fff
+    style V2 fill:#6cb85c,stroke:#333,color:#fff
+    style V3 fill:#6cb85c,stroke:#333,color:#fff

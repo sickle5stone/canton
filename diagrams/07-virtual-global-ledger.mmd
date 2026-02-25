@@ -1,0 +1,42 @@
+graph TB
+    subgraph "Virtual Global Ledger"
+        direction TB
+
+        subgraph "Domain Alpha"
+            DA_S["Sequencer α"]
+            CA1(["Contract 1"])
+            CA2(["Contract 2"])
+            CA1 -.-> DA_S
+            CA2 -.-> DA_S
+        end
+
+        subgraph "Domain Beta"
+            DB_S["Sequencer β"]
+            CB1(["Contract 3"])
+            CB2(["Contract 4"])
+            CB1 -.-> DB_S
+            CB2 -.-> DB_S
+        end
+
+        subgraph "Global Synchronizer"
+            GS_S["Sequencer (Global)"]
+        end
+
+        P1["Participant 1<br/>connected to: α, β"]
+        P2["Participant 2<br/>connected to: α"]
+        P3["Participant 3<br/>connected to: β"]
+
+        P1 <--> DA_S
+        P1 <--> DB_S
+        P2 <--> DA_S
+        P3 <--> DB_S
+
+        DA_S <-->|"contract<br/>transfer"| GS_S
+        DB_S <-->|"contract<br/>transfer"| GS_S
+    end
+
+    style GS_S fill:#f9d71c,stroke:#333,color:#000
+    style CA1 fill:#fff,stroke:#4a90d9
+    style CA2 fill:#fff,stroke:#4a90d9
+    style CB1 fill:#fff,stroke:#e87d3e
+    style CB2 fill:#fff,stroke:#e87d3e

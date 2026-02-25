@@ -1,0 +1,15 @@
+Section: 4.2 Cross-Domain Contract Transfers
+============================================================
+
+Domain alpha (source)              Domain beta (target)
+     |                                   |
+     |  1. Transfer-Out                  |
+     |  Contract X marked inactive       |
+     |  Stakeholders notified            |
+     |                                   |
+     |------------ proof --------------->|
+     |                                   |
+     |                                   |  2. Transfer-In
+     |                                   |  Contract X activated
+     |                                   |  Stakeholders notified
+     |                                   |

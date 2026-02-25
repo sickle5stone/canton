@@ -1,0 +1,20 @@
+graph TB
+    subgraph "Synchronization Domain"
+        direction TB
+        TM["Topology Manager<br/>─────────────<br/>Identity mappings<br/>Domain membership<br/>Key management<br/>Permissioning"]
+        SEQ["Sequencer<br/>─────────────<br/>Total-order multicast<br/>Timestamping<br/>Message delivery"]
+        MED["Mediator<br/>─────────────<br/>Confirmation protocol<br/>Collect approvals/rejections<br/>Compute & broadcast verdict"]
+
+        TM --- SEQ
+        TM --- MED
+        SEQ --- MED
+    end
+
+    P1["Participant A"] <-->|"encrypted<br/>messages"| SEQ
+    P2["Participant B"] <-->|"encrypted<br/>messages"| SEQ
+    P1 -.->|"confirmations"| MED
+    P2 -.->|"confirmations"| MED
+
+    style SEQ fill:#4a90d9,stroke:#333,color:#fff
+    style MED fill:#e87d3e,stroke:#333,color:#fff
+    style TM fill:#9b59b6,stroke:#333,color:#fff

@@ -1,0 +1,32 @@
+graph LR
+    subgraph "Canton Network"
+        CN_D1["Domain A<br/>(Tokenization)"]
+        CN_D2["Domain B<br/>(Settlement)"]
+        CN_GS["Global<br/>Synchronizer"]
+        CN_D1 <--> CN_GS
+        CN_D2 <--> CN_GS
+    end
+
+    subgraph "External Ecosystems"
+        ETH["Ethereum"]
+        SOL["Solana"]
+        OTHER["Other L1/L2s"]
+    end
+
+    subgraph "Interoperability Providers"
+        CL["Chainlink<br/>(Data feeds, CCIP)"]
+        LZ["LayerZero<br/>(Cross-chain messaging)"]
+        WH["Wormhole<br/>(Asset bridging)"]
+    end
+
+    CN_GS <--> CL
+    CN_GS <--> LZ
+    CN_GS <--> WH
+    CL <--> ETH
+    LZ <--> SOL
+    WH <--> OTHER
+
+    style CN_GS fill:#f9d71c,stroke:#333,color:#000
+    style CL fill:#375bd2,stroke:#333,color:#fff
+    style LZ fill:#6c5ce7,stroke:#333,color:#fff
+    style WH fill:#00b894,stroke:#333,color:#fff

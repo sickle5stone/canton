@@ -1,0 +1,22 @@
+Section: 2.1 Validator / Participant Nodes
+============================================================
+
++--------------------------------------+
+| Canton Validator / Participant Node  |
++--------------------------------------+
+|  Daml Application Logic              |
+|  - Templates, choices, workflows     |
+|                                      |
+|  Canton Protocol Engine              |
+|  - Authorization & privacy checks    |
+|  - Transaction construction          |
+|  - Encryption & envelope creation    |
+|                                      |
+|  Storage Backend                     |
+|  - Active contract set (DB)          |
+|  - Ledger offsets & indexes          |
+|                                      |
+|  Network & Sync Clients              |
+|  - Connections to synchronizers      |
+|  - Encrypted messaging to peers      |
++--------------------------------------+

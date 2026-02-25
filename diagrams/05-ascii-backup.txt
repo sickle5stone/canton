@@ -1,0 +1,15 @@
+Section: 6.1 Logical Layering
+============================================================
+
++------------------------------+
+|  Daml Applications & Wallets |
++------------------------------+
+|  Canton Protocol & Daml RTS |
+|  (on Validator/Participant)  |
++------------------------------+
+|  Synchronizers & Domains     |
+|  (incl. Global Synchronizer) |
++------------------------------+
+|  Databases / L1 Integrations |
+|  Infrastructure & Hosting    |
++------------------------------+

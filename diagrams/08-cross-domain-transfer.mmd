@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant P as Participant<br/>(initiator)
+    participant D1 as Domain α<br/>(source)
+    participant D2 as Domain β<br/>(target)
+
+    Note over P: Contract X is active on Domain α<br/>Needs to move to Domain β
+
+    rect rgb(240, 248, 255)
+        Note right of D1: Transfer-Out Phase
+        P->>D1: Transfer-Out request<br/>(Contract X → Domain β)
+        D1->>D1: Timestamp & record<br/>Contract X = transferred-out
+        D1->>P: Transfer-Out confirmed
+    end
+
+    Note over P: Carries transfer proof<br/>to target domain
+
+    rect rgb(255, 248, 240)
+        Note right of D2: Transfer-In Phase
+        P->>D2: Transfer-In request<br/>(Contract X + transfer proof)
+        D2->>D2: Validate proof & timestamp<br/>Contract X = active
+        D2->>P: Transfer-In confirmed
+    end
+
+    Note over P: Contract X now active<br/>on Domain β

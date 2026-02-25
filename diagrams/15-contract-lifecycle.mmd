@@ -1,0 +1,23 @@
+stateDiagram-v2
+    [*] --> Created: Create action committed
+    Created --> Active: Stored in ACS
+
+    Active --> Exercised: Choice exercised
+    Exercised --> Archived: Consuming choice<br/>(contract consumed)
+    Exercised --> Active: Non-consuming choice<br/>(contract survives)
+
+    Active --> TransferredOut: Transfer-out to Domain β
+    TransferredOut --> TransferredIn: Transfer-in on Domain β
+    TransferredIn --> Active: Active on new domain
+
+    Archived --> [*]
+
+    note right of Active
+        Contract is in the Active Contract Set (ACS)
+        and can be acted upon by authorized parties
+    end note
+
+    note right of Archived
+        Contract is permanently consumed
+        (similar to a spent UTXO)
+    end note

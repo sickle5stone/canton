@@ -1,0 +1,32 @@
+graph TB
+    subgraph "What Each Entity Sees"
+        direction TB
+
+        subgraph "Submitting Participant"
+            SP["Sees: Full transaction tree<br/>(all actions & parties)"]
+        end
+
+        subgraph "Stakeholder Participant"
+            SKP["Sees: Own projected views<br/>(actions they're party to)"]
+        end
+
+        subgraph "Sequencer"
+            SEQ["Sees: Encrypted envelopes only<br/>(cannot decrypt content)"]
+        end
+
+        subgraph "Mediator"
+            MED["Sees: Encrypted metadata<br/>(knows who confirms, not what)"]
+        end
+
+        subgraph "Non-Stakeholder Participant"
+            NSP["Sees: Nothing<br/>(not notified at all)"]
+        end
+    end
+
+    SP ~~~ SKP ~~~ SEQ ~~~ MED ~~~ NSP
+
+    style SP fill:#2ecc71,stroke:#333,color:#fff
+    style SKP fill:#3498db,stroke:#333,color:#fff
+    style SEQ fill:#f39c12,stroke:#333,color:#000
+    style MED fill:#e67e22,stroke:#333,color:#fff
+    style NSP fill:#95a5a6,stroke:#333,color:#fff

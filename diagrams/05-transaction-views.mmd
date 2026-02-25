@@ -1,0 +1,38 @@
+graph TB
+    subgraph "Full Transaction Tree (Submitter's View)"
+        TX["Transaction Root"]
+        A1["Action 1: Transfer<br/>parties: Alice, Bob"]
+        A2["Action 2: Create<br/>parties: Bob, Charlie"]
+        A1_1["Subaction 1.1: Archive<br/>parties: Alice"]
+        A1_2["Subaction 1.2: Create<br/>parties: Alice, Bob"]
+
+        TX --> A1
+        TX --> A2
+        A1 --> A1_1
+        A1 --> A1_2
+    end
+
+    subgraph "Alice's Projected View"
+        TX_A["Transaction Root"]
+        A1_A["Action 1: Transfer ✓"]
+        A2_A["Action 2: ████ (blinded)"]
+        A1_1_A["Subaction 1.1: Archive ✓"]
+        A1_2_A["Subaction 1.2: Create ✓"]
+
+        TX_A --> A1_A
+        TX_A --> A2_A
+        A1_A --> A1_1_A
+        A1_A --> A1_2_A
+    end
+
+    subgraph "Charlie's Projected View"
+        TX_C["Transaction Root"]
+        A1_C["Action 1: ████ (blinded)"]
+        A2_C["Action 2: Create ✓"]
+
+        TX_C --> A1_C
+        TX_C --> A2_C
+    end
+
+    style A2_A fill:#999,stroke:#333,color:#fff
+    style A1_C fill:#999,stroke:#333,color:#fff

@@ -1,0 +1,35 @@
+sequenceDiagram
+    participant Sub as Submitting<br/>Participant
+    participant Seq as Sequencer
+    participant P_A as Participant A<br/>(Stakeholder)
+    participant P_B as Participant B<br/>(Stakeholder)
+    participant Med as Mediator
+
+    Note over Sub: Construct transaction tree<br/>Decompose into encrypted views
+
+    Sub->>Seq: Confirmation Request<br/>(encrypted views)
+    Seq->>Seq: Timestamp & order
+
+    par Distribute to stakeholders
+        Seq->>P_A: Encrypted views<br/>(A can decrypt its views)
+        Seq->>P_B: Encrypted views<br/>(B can decrypt its views)
+        Seq->>Med: Encrypted metadata
+    end
+
+    Note over P_A: Decrypt views, validate<br/>authorization & consistency
+    Note over P_B: Decrypt views, validate<br/>authorization & consistency
+
+    P_A->>Seq: Confirmation Response (approve ✓)
+    P_B->>Seq: Confirmation Response (approve ✓)
+    Seq->>Med: Forward responses
+
+    Note over Med: All approved →<br/>compute approval verdict
+
+    Med->>Seq: Approval Verdict
+    par Distribute verdict
+        Seq->>Sub: Verdict: APPROVED
+        Seq->>P_A: Verdict: APPROVED
+        Seq->>P_B: Verdict: APPROVED
+    end
+
+    Note over Sub,P_B: All participants commit transaction<br/>and update active contract sets

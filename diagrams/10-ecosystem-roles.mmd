@@ -1,0 +1,39 @@
+graph TB
+    subgraph "Canton Ecosystem Roles"
+        direction TB
+
+        subgraph "Governance"
+            CF["Canton Foundation"]
+            SV["Super Validators<br/>(governance + validation)"]
+            CF --> SV
+        end
+
+        subgraph "Application Providers"
+            AP1["Tokenization Platforms"]
+            AP2["Settlement Systems"]
+            AP3["Collateral Mgmt"]
+            AP4["Trading Venues"]
+        end
+
+        subgraph "Infrastructure Providers"
+            IP1["Validators<br/>(600+)"]
+            IP2["Domain Operators"]
+            IP3["Node Hosting<br/>Providers"]
+        end
+
+        subgraph "Service Providers"
+            SP1["Custodians<br/>(BitGo, etc.)"]
+            SP2["KYC / Compliance"]
+            SP3["Interoperability<br/>(Chainlink, LayerZero)"]
+        end
+
+        subgraph "End Users"
+            EU["Banks · Asset Managers · Corporates"]
+        end
+
+        SV --> IP1
+        AP1 --> IP1
+        AP2 --> IP1
+        SP1 --> EU
+        IP1 --> EU
+    end

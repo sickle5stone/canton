@@ -1,0 +1,18 @@
+graph TB
+    subgraph "Canton Domain — Backend Agnostic"
+        DOMAIN["Domain Protocol<br/>(Sequencer + Mediator + Topology Mgr)"]
+    end
+
+    subgraph "Pluggable Backends"
+        PG["PostgreSQL<br/>─────────<br/>Low latency<br/>Simple ops<br/>Single-org domains"]
+        FABRIC["Hyperledger Fabric<br/>─────────<br/>Consortium trust<br/>BFT ordering<br/>Multi-org domains"]
+        ETH["Ethereum<br/>─────────<br/>Public verifiability<br/>Decentralized trust<br/>Open domains"]
+    end
+
+    DOMAIN --> PG
+    DOMAIN --> FABRIC
+    DOMAIN --> ETH
+
+    style PG fill:#336791,stroke:#333,color:#fff
+    style FABRIC fill:#2d6b4e,stroke:#333,color:#fff
+    style ETH fill:#3c3c3d,stroke:#333,color:#fff

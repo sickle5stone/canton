@@ -1,0 +1,34 @@
+graph TD
+    subgraph "Daml Level"
+        T["Template Definition<br/>─────────<br/>Data fields<br/>Signatories & observers<br/>Choices (actions)<br/>Ensure clauses"]
+        I["Contract Instance<br/>─────────<br/>Unique contract ID<br/>Bound parties<br/>Active / consumed state"]
+        TX["Transaction Tree<br/>─────────<br/>Hierarchical actions<br/>Authorization per action<br/>Visibility per subtree"]
+
+        T -->|"instantiation"| I
+        I -->|"actions within tx"| TX
+    end
+
+    subgraph "Canton Node Level"
+        ENG["Protocol Engine<br/>─────────<br/>Execute Daml logic<br/>Validate authorization<br/>Construct tx tree<br/>Encrypt into views"]
+        ACS["Active Contract Set<br/>─────────<br/>Local DB (Postgres)<br/>Track active contracts<br/>Conflict detection"]
+
+        TX -->|"submit"| ENG
+        ENG -->|"commit / reject"| ACS
+    end
+
+    subgraph "Synchronization Level"
+        SEQ2["Sequencer<br/>─────────<br/>Total-order multicast<br/>Timestamp messages"]
+        MED2["Mediator<br/>─────────<br/>Collect confirmations<br/>Issue verdict"]
+
+        ENG -->|"encrypted<br/>envelopes"| SEQ2
+        SEQ2 <--> MED2
+        MED2 -->|"verdict"| ENG
+    end
+
+    style T fill:#8e44ad,stroke:#333,color:#fff
+    style I fill:#8e44ad,stroke:#333,color:#fff
+    style TX fill:#8e44ad,stroke:#333,color:#fff
+    style ENG fill:#2980b9,stroke:#333,color:#fff
+    style ACS fill:#2980b9,stroke:#333,color:#fff
+    style SEQ2 fill:#e67e22,stroke:#333,color:#fff
+    style MED2 fill:#e67e22,stroke:#333,color:#fff

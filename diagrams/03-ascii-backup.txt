@@ -1,0 +1,16 @@
+Section: 3.1 Transaction Submission and Confirmation (Two-Phase Commit)
+============================================================
+
+Submitter           Sequencer           Participant A       Participant B       Mediator
+   |                    |                    |                    |                |
+   |-- Confirm Req ---->|                    |                    |                |
+   |  (encrypted views) |-- distribute ----->|                    |                |
+   |                    |-- distribute ------>|------------------->|                |
+   |                    |                    |                    |                |
+   |                    |                    |-- approve -------->|-- approve ---->|
+   |                    |                    |                    |                |
+   |                    |                    |                    |    verdict:    |
+   |                    |<-------------------------------------------APPROVED ----|
+   |<-- verdict --------|-- verdict -------->|-- verdict -------->|                |
+   |                    |                    |                    |                |
+   |  [commit & update ACS]  [commit & update ACS]  [commit & update ACS]        |

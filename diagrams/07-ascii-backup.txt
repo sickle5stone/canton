@@ -1,0 +1,22 @@
+Section: 7.5 Contract Lifecycle
+============================================================
+
+                     Create action committed
+                              |
+                              v
+ [*] ──> Created ──> Active (in ACS)
+                        |
+            +-----------+-----------+
+            |           |           |
+            v           v           v
+      Consuming    Non-consuming  Transfer-out
+       choice        choice         |
+            |           |           v
+            v           v      Transferred-out
+       Archived    Still Active     |
+       (consumed,                   v
+       like spent               Transfer-in
+       UTXO)                        |
+                                    v
+                              Active on
+                              new domain

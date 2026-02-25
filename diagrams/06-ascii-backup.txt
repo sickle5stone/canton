@@ -1,0 +1,8 @@
+Section: 7.2 Contracts, Actions, and Transactions
+============================================================
+
+Transaction
+  |-- Action 1 on Contract A
+  |    \-- Subaction 1.1 (e.g., create Contract B)
+  |-- Action 2 on Contract B
+  \-- Action 3 on Contract C

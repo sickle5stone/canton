@@ -1,0 +1,25 @@
+graph TD
+    TX["Transaction"]
+    A1["Action 1<br/>Exercise Transfer<br/>on Contract A<br/><i>authorizers: Alice, Bob</i>"]
+    A2["Action 2<br/>Exercise Settle<br/>on Contract B<br/><i>authorizers: Bob, Charlie</i>"]
+
+    A1_1["Subaction 1.1<br/>Archive Contract A<br/><i>authorizers: Alice</i>"]
+    A1_2["Subaction 1.2<br/>Create Contract A'<br/><i>signatories: Alice, Bob</i>"]
+
+    A2_1["Subaction 2.1<br/>Archive Contract B<br/><i>authorizers: Bob</i>"]
+    A2_2["Subaction 2.2<br/>Create Contract C<br/><i>signatories: Bob, Charlie</i>"]
+
+    TX --> A1
+    TX --> A2
+    A1 --> A1_1
+    A1 --> A1_2
+    A2 --> A2_1
+    A2 --> A2_2
+
+    style TX fill:#2c3e50,stroke:#333,color:#fff
+    style A1 fill:#2980b9,stroke:#333,color:#fff
+    style A2 fill:#2980b9,stroke:#333,color:#fff
+    style A1_1 fill:#e74c3c,stroke:#333,color:#fff
+    style A1_2 fill:#27ae60,stroke:#333,color:#fff
+    style A2_1 fill:#e74c3c,stroke:#333,color:#fff
+    style A2_2 fill:#27ae60,stroke:#333,color:#fff

@@ -1,0 +1,21 @@
+Section: #2.2.1 Domain Sub-Components
+============================================================
+
++-----------------------------------------------------------+
+|               Canton Synchronization Domain               |
+|                                                           |
+|  +----------------+       +----------------+              |
+|  | Participant A  |       | Participant B  |              |
+|  | (Validator)    |       | (Validator)    |              |
+|  +--------+-------+       +--------+-------+              |
+|           |                        |                      |
+|           |  Encrypted Tx Envelopes|                      |
+|           +------------+-----------+                      |
+|                        |                                  |
+|    +------------+------v-------+-------------+            |
+|    | Topology   | Sequencer    | Mediator    |            |
+|    | Manager    | - Ordering   | - Confirm.  |            |
+|    | - Identity | - Sequencing |   protocol  |            |
+|    | - Keys     | - Timestamps | - Verdicts  |            |
+|    +------------+--------------+-------------+            |
++-----------------------------------------------------------+

@@ -1,0 +1,27 @@
+graph LR
+    subgraph "Open Domain"
+        O_SEQ["Sequencer<br/>(public API)"]
+        O_P1["Participant X"]
+        O_P2["Participant Y"]
+        O_P3["Any new<br/>Participant"]
+        O_P1 <--> O_SEQ
+        O_P2 <--> O_SEQ
+        O_P3 -.->|"auto-join"| O_SEQ
+    end
+
+    subgraph "Permissioned Domain"
+        P_TM["Topology Manager<br/>allow-list"]
+        P_SEQ["Sequencer<br/>(VPN / firewall)"]
+        P_P1["Vetted<br/>Participant A"]
+        P_P2["Vetted<br/>Participant B"]
+        P_P3["Unvetted<br/>Participant"]
+        P_TM -->|"approves"| P_P1
+        P_TM -->|"approves"| P_P2
+        P_P3 -.-x|"rejected"| P_TM
+        P_P1 <--> P_SEQ
+        P_P2 <--> P_SEQ
+    end
+
+    style P_P3 fill:#e74c3c,stroke:#333,color:#fff
+    style O_P3 fill:#2ecc71,stroke:#333,color:#fff
+    style P_TM fill:#9b59b6,stroke:#333,color:#fff
