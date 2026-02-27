@@ -1263,6 +1263,215 @@ GenTransactionTree
 
 ---
 
+## 11. Node Hosting Architecture for Regulated Institutions
+
+### 11.1 Hosting Models
+
+Banks and regulated entities have three primary options for participating as validator nodes on the Canton Network. Each model carries different trust, privacy, and operational trade-offs.
+
+```mermaid
+graph TB
+    subgraph "Hosting Model Spectrum"
+        direction LR
+
+        subgraph "Model A: Fully Managed<br/>(Third-Party Hosted)"
+            A1["Provider runs<br/>validator infra"]
+            A2["Provider manages<br/>DB, networking, patching"]
+            A3["Bank retains<br/>root namespace key"]
+            A1 --> A2 --> A3
+        end
+
+        subgraph "Model B: Hybrid<br/>(Provider Infra + Bank KMS)"
+            B1["Provider runs<br/>validator infra"]
+            B2["Bank controls<br/>KMS (CloudHSM)"]
+            B3["Provider cannot<br/>sign or decrypt"]
+            B1 --> B2 --> B3
+        end
+
+        subgraph "Model C: Self-Hosted<br/>(Full Control)"
+            C1["Bank runs<br/>own infrastructure"]
+            C2["Bank manages<br/>all keys in own HSM"]
+            C3["Bank handles<br/>ops, patching, HA"]
+            C1 --> C2 --> C3
+        end
+    end
+
+    style A1 fill:#e74c3c,stroke:#333,color:#fff
+    style A2 fill:#e74c3c,stroke:#333,color:#fff
+    style A3 fill:#e74c3c,stroke:#333,color:#fff
+    style B1 fill:#f39c12,stroke:#333,color:#000
+    style B2 fill:#f39c12,stroke:#333,color:#000
+    style B3 fill:#f39c12,stroke:#333,color:#000
+    style C1 fill:#27ae60,stroke:#333,color:#fff
+    style C2 fill:#27ae60,stroke:#333,color:#fff
+    style C3 fill:#27ae60,stroke:#333,color:#fff
+```
+
+**Model A — Fully Managed (Third-Party Hosted)**: A Node-as-a-Service provider (e.g., Blockdaemon, Figment, Kiln, Everstake) runs the validator node on their infrastructure. The provider has access to the node's private signing and encryption keys, the PostgreSQL database containing the Private Contract Store (full decrypted contract payloads), and the Active Contract Journal. The bank retains the root namespace key in cold storage. Fastest time-to-network, but highest trust surface.
+
+**Model B — Hybrid (Provider Infra + Bank KMS)**: The provider operates the compute and networking infrastructure, but the bank controls all cryptographic keys via an external KMS (AWS CloudHSM, Azure Key Vault, HashiCorp Vault). The validator node is configured to call the bank's KMS for every signing and decryption operation. The provider physically hosts the database, but cannot independently decrypt transaction views or sign topology transactions without KMS authorization. Recommended model for regulated institutions using third-party hosting.
+
+**Model C — Self-Hosted (Full Control)**: The bank operates the entire stack — compute, database, networking, key management — in its own data center or cloud tenancy. Maximum control over data residency, key custody, and operational procedures. Highest operational burden.
+
+### 11.2 Third-Party Provider Role and Access
+
+Approved Node-as-a-Service providers on Canton include: Blockdaemon, BCW StakeFI, Copper, Dfns, DSRV, Everstake, Figment, Kiln, and P2P.org (among others listed by the Canton Foundation). These providers offer institutional-grade SLAs (99.9%+ uptime), 24/7 monitoring, and compliance certifications (ISO 27001, SOC 2 Type II).
+
+**What the provider has access to (Model A — no external KMS):**
+
+| Data / Asset | Provider Access | Risk |
+|---|---|---|
+| Private encryption keys | Full access (stored on provider infra) | Can decrypt all transaction views for hosted parties |
+| Private signing keys | Full access | Can sign topology transactions, protocol messages |
+| Private Contract Store (PCS) | Full access (PostgreSQL on provider infra) | Contains all decrypted contract payloads |
+| Active Contract Journal | Full access | Reveals which contracts are active/archived |
+| Root namespace key | **No access** (bank retains in cold storage) | Cannot perform namespace-level identity operations |
+| Transaction metadata | Full access | Counterparty IDs, timestamps, amounts |
+
+**With external KMS (Model B):**
+
+| Data / Asset | Provider Access | Risk |
+|---|---|---|
+| Private encryption/signing keys | **No direct access** (keys in bank KMS) | Cannot independently decrypt or sign |
+| PCS database (encrypted at rest) | Physical hosting but keys in KMS | Access requires KMS authorization |
+| Root namespace key | **No access** | Bank retains full identity control |
+| Network traffic patterns | Observable (timestamps, envelope sizes) | Metadata leakage remains |
+
+### 11.3 Trust Boundaries and Privacy Under Each Model
+
+```mermaid
+graph TB
+    subgraph "Trust Boundary — Third-Party Hosted (Model A)"
+        direction TB
+        BANK_A["Bank<br/>─────<br/>Holds: Root namespace key<br/>Controls: Party identity"]
+        PROVIDER_A["Hosting Provider<br/>─────<br/>Holds: Signing keys, Encryption keys<br/>Accesses: PCS, ACJ, full transaction data<br/>Runs: Validator process, PostgreSQL"]
+        SYNC_A["Synchronizer<br/>─────<br/>Sees: Encrypted envelopes only"]
+
+        BANK_A -->|"delegates operational<br/>trust"| PROVIDER_A
+        PROVIDER_A <-->|"encrypted<br/>gRPC/TLS"| SYNC_A
+    end
+
+    subgraph "Trust Boundary — Hybrid (Model B)"
+        direction TB
+        BANK_B["Bank<br/>─────<br/>Holds: Root key + operational keys (KMS)<br/>Controls: All crypto operations"]
+        PROVIDER_B["Hosting Provider<br/>─────<br/>Runs: Infra, networking<br/>Cannot: Decrypt or sign independently"]
+        SYNC_B["Synchronizer<br/>─────<br/>Sees: Encrypted envelopes only"]
+
+        BANK_B -->|"KMS calls for<br/>every crypto op"| PROVIDER_B
+        PROVIDER_B <-->|"encrypted<br/>gRPC/TLS"| SYNC_B
+    end
+
+    style BANK_A fill:#3498db,stroke:#333,color:#fff
+    style PROVIDER_A fill:#e74c3c,stroke:#333,color:#fff
+    style SYNC_A fill:#95a5a6,stroke:#333,color:#fff
+    style BANK_B fill:#3498db,stroke:#333,color:#fff
+    style PROVIDER_B fill:#f39c12,stroke:#333,color:#000
+    style SYNC_B fill:#95a5a6,stroke:#333,color:#fff
+```
+
+Canton's sub-transaction privacy ensures that even in Model A, the hosting provider only sees data relevant to the bank's own parties. The provider cannot see transactions between other participants on the network. However, the provider does have full visibility into every contract, counterparty, and amount flowing through the bank's validator — which for a regulated institution may include highly sensitive financial positions, counterparty exposures, and trading strategies.
+
+### 11.4 Self-Hosting: What a Bank Must Manage
+
+Banks choosing Model C must provision and operate:
+
+**Infrastructure:**
+- PostgreSQL 14-17 (only supported production DB in Canton 3.x)
+- JVM/Scala runtime for the Canton node process
+- Kubernetes recommended (lifecycle management, scaling, automated failover)
+- Fixed egress IP address (must be whitelisted by sponsoring Super Validator)
+- gRPC over TLS for all inter-node communication
+- OIDC integration for authentication
+
+**Canton Coin (CC):**
+- No staking or locking requirement — fundamentally different from PoS chains
+- CC needed only for purchasing **traffic** (message sequencing fees on the synchronizer)
+- CC earned passively through **liveness rewards** (binary: node is online or it isn't)
+- Bank must manage CC treasury: receiving rewards, purchasing traffic, potentially acquiring CC from market
+
+**Traffic Management:**
+- Two-tier traffic system: free base rate + purchased extra traffic
+- Base rate: ~400KB burst replenishing over ~20 minutes of inactivity
+- Extra traffic: purchased with CC at ~$60/MB (USD-denominated, settled by burning CC)
+- When both base and extra traffic are exhausted, the sequencer denies further submissions
+- Automatic top-up available via validator app automation
+- Must monitor traffic consumption and ensure adequate CC balance
+
+**Rewards:**
+- Mining rounds every 10 minutes; coupons must be redeemed next round or lost permanently
+- Validator liveness rewards (binary proof-of-life)
+- Transaction rewards (cashback on traffic when hosted parties transact)
+- Application provider rewards (if the bank also develops apps)
+
+**Operational Procedures:**
+- Database backups must be refreshed within 30 days (sequencer pruning window)
+- Key rotation and lifecycle management
+- Software upgrades (Canton releases)
+- Monitoring, alerting, incident response
+
+### 11.5 Node Resiliency and Data Safeguarding
+
+```mermaid
+graph TB
+    subgraph "Recovery Layers"
+        direction TB
+        L1["Layer 1: Auto Self-Healing<br/>─────<br/>Automatic retry of DB/network outages<br/>No intervention needed"]
+        L2["Layer 2: Crash/Restart Recovery<br/>─────<br/>Re-create state from persisted stores<br/>Replay from synchronizer<br/>Dedup functional after catch-up"]
+        L3["Layer 3: Disaster Recovery<br/>─────<br/>Restore from DB backup (<30 days)<br/>Replay missing data from synchronizer<br/>ACS commitments verify state"]
+        L4["Layer 4: Manual Repair<br/>─────<br/>repair.add_contracts / purge_contracts<br/>repair.change_domain<br/>Requires disconnect + no in-flight txs"]
+
+        L1 --> L2 --> L3 --> L4
+    end
+
+    style L1 fill:#27ae60,stroke:#333,color:#fff
+    style L2 fill:#2ecc71,stroke:#333,color:#fff
+    style L3 fill:#f39c12,stroke:#333,color:#000
+    style L4 fill:#e74c3c,stroke:#333,color:#fff
+```
+
+**What happens when a node goes down:**
+- The bank's parties cannot submit new transactions or receive updates while offline
+- Liveness rewards stop accumulating (binary: alive or not)
+- Pending in-flight transactions may time out at the mediator
+- On restart, the node automatically replays from the synchronizer, catching up on all committed transactions that occurred during downtime
+- The Private Contract Store is rebuilt from replayed events
+- ACS commitments (periodic cryptographic hashes exchanged between participant pairs) verify that the recovered state matches the counterparty's view
+
+**Data loss scenarios and safeguards:**
+
+| Scenario | Impact | Mitigation |
+|---|---|---|
+| Node crash (no data loss) | Temporary downtime; auto-recovery on restart | Kubernetes auto-restart; SequencerClient handles reconnection |
+| Database corruption | ACS may be inconsistent | Restore from backup + replay from synchronizer |
+| Database lost entirely | All local state lost | Restore from backup < 30 days old; replay committed txs from synchronizer |
+| Backup older than 30 days | Synchronizer has pruned history | **Unrecoverable via standard replay**; requires Layer 4 repair (ACS import from scan APIs) |
+| Synchronizer goes down | All connected participants stalled | Participants wait; BFT synchronizer (2/3 majority) tolerates minority failures |
+| Synchronizer permanently lost | Contracts stranded on dead synchronizer | `repair.change_domain` to migrate contracts to new synchronizer |
+
+**Recommended safeguarding architecture:**
+
+1. **PostgreSQL HA**: Streaming replication with automatic failover (managed cloud PostgreSQL or Patroni)
+2. **Backup cadence**: Daily database backups, tested restores, strict < 30-day retention enforcement
+3. **ACS commitment monitoring**: Alert on `CommitmentPeriod` mismatches — early detection of state divergence
+4. **Key backup**: Root namespace key in geographically redundant cold storage (HSM in separate facility); operational keys in replicated KMS
+5. **Multi-region**: For critical deployments, deploy standby node in secondary region with replicated database
+6. **Monitoring**: Track traffic consumption (avoid denial of service from exhaustion), node liveness, sequencer subscription health, ACS commitment status
+
+### 11.6 Regulatory Considerations for Hosting
+
+| Concern | Self-Hosted | Third-Party Hosted | Hybrid (KMS) |
+|---|---|---|---|
+| Data residency | Full control — bank chooses jurisdiction | Must contractually enforce with provider | Provider hosts infra; bank controls key material jurisdiction |
+| Key custody | Bank HSMs exclusively | Provider holds operational keys | Bank KMS; provider cannot access |
+| Operational risk | Internal ops team; single point if underfunded | Provider SLA (99.9%+); concentration risk | Split responsibility; clear SLA boundaries |
+| Audit compliance | Direct access to all logs and data | Rely on SOC 2 / ISO 27001 attestations | Mix of direct access (KMS audit logs) and provider attestations |
+| Supervisory access | Regulators can be observer parties with real-time view | Same, but through provider's infrastructure | Same, but crypto operations are bank-controlled |
+| Basel framework | Full compliance — institution controls assets and data | Must demonstrate provider oversight | Strong compliance posture |
+
+Canton was designed for **existing regulatory models** ("same risk, same activity, same regulation"). Regulators can be permissioned as **observer parties** with real-time, immutable, read-only access to supervised transactions. Every trade and settlement can auto-generate cryptographically proven regulatory reports.
+
+---
+
 ## Diagram Index
 
 | # | File | Description |

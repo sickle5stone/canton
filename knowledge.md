@@ -528,6 +528,311 @@ For workflows spanning multiple consortiums, the **Global Synchronizer** coordin
 
 ---
 
+## 13. Node Hosting and Third-Party Providers
+
+### Approved Node-as-a-Service Providers
+
+The Canton Foundation maintains a list of approved providers: Blockdaemon, BCW StakeFI, Copper, Dfns, DSRV, Everstake, Figment, Kiln, P2P.org, and others. These offer Validator-as-a-Service for institutions that do not want to run their own infrastructure.
+
+### Blockdaemon
+
+Blockdaemon's Canton offering includes:
+1. **Validator Infrastructure** — 99.9% uptime SLA, 24/7 monitoring, governance participation support
+2. **Super Validator Partnership** — streamlined SV onboarding (early 2026)
+3. **Canton Wallet via Institutional Vault** — MPC-secured wallet for receiving, storing, transferring CC; on-premises wallet option available
+4. **Canton Tokenization** — privacy-first tokenization services
+
+Certifications: ISO 27001, SOC 2 Type II. Blockdaemon has integrated CC into their Institutional Vault for treasury management and traffic fee payments.
+
+### What a Third-Party Host Can Access
+
+**Without external KMS (Model A):**
+- Private encryption keys → can decrypt all transaction views for hosted parties
+- Private signing keys → can sign topology transactions and protocol messages
+- Private Contract Store (PCS) in PostgreSQL → full decrypted contract payloads
+- Active Contract Journal → contract status (active/archived/locked)
+- All transaction metadata — counterparties, timestamps, amounts
+
+**With external KMS (Model B — recommended for regulated entities):**
+- Physically hosts compute and database but cannot independently decrypt or sign
+- Bank's KMS (CloudHSM, Azure Key Vault, etc.) handles all crypto operations
+- Provider sees encrypted data at rest; useful access requires KMS authorization
+- Network traffic patterns (metadata: envelope sizes, timing) still observable
+
+In both models, the **root namespace key** should be retained by the bank in cold storage. The root key is the trust anchor for all identity operations — loss of it means loss of namespace authority.
+
+### Onboarding Process
+
+1. Request access through an existing Super Validator, validator, app provider, or the Global Synchronizer Foundation
+2. Prepare container environment (VM or Kubernetes) in cloud or own data center
+3. Configure fixed egress IP; submit to sponsor for whitelisting
+4. Set up OIDC authentication (coordinate with enterprise identity provider)
+5. Download packages from sponsoring Super Validator with onboarding secret
+6. Deploy to DevNet first, then request TestNet/MainNet access
+
+### Infrastructure Requirements for Self-Hosting
+
+| Component | Requirement |
+|---|---|
+| Database | PostgreSQL 14-17 (only production DB in Canton 3.x) |
+| Runtime | JVM/Scala process |
+| Orchestration | Kubernetes recommended (Docker Compose also supported) |
+| Networking | Fixed egress IP (whitelisted by Super Validators); gRPC over TLS |
+| Auth | OIDC integration |
+| Compute | Configurable per deployment; depends on transaction volume and party count |
+
+---
+
+## 14. Canton Coin (CC) and Traffic System
+
+### Canton Coin Basics
+
+- **No staking or locking requirement** — fundamental difference from PoS chains
+- No risk of slashing
+- CC is needed only for purchasing **traffic** (paying for sequencer message delivery)
+- CC is earned passively through **liveness rewards**
+- Total supply cap: **100 billion CC** mintable in first 10 years, no pre-mine
+- Current circulation: ~22 billion CC (early 2025)
+- Annual issuance/burn target: ~2.5 billion CC in equilibrium
+
+### Traffic System — Detailed
+
+Traffic management protects the sequencer from abuse. Every message submission consumes traffic balance.
+
+**Two types of traffic:**
+
+1. **Base Rate Traffic (free tier)**
+   - Accumulates passively based on synchronizer time
+   - Parameters: `burstAmount` (e.g., 400,000 bytes) and `burstWindow` (e.g., 1,200 seconds / 20 min)
+   - Fully replenishes after complete inactivity during the burst window
+   - Always consumed **first** before extra traffic
+
+2. **Extra Traffic (purchased with CC)**
+   - Purchased by calling `SetTrafficPurchased` RPC on at least `threshold` sequencers
+   - Priced in USD per MB (e.g., **$60.00/MB**), settled by burning CC at current USD exchange rate
+   - Minimum top-up: `minTopupAmount` (e.g., 200,000 bytes)
+   - The request sets an absolute total value, not a delta
+   - Each request needs a serial number for idempotency
+
+**Traffic cost calculation:**
+
+```
+storage_cost = envelope.payload_bytes
+network_cost = envelope.payload_bytes * recipients.count * read_vs_write_scaling_factor / 10000
+total_cost = storage_cost + network_cost + base_event_cost
+```
+
+Example: `readVsWriteScalingFactor = 4`, sending 1 MB to 10 recipients → cost = 1,040,000 bytes.
+
+**When traffic is exhausted:** The sequencer denies further submissions until balance recovers (base rate replenishment) or is topped up (extra traffic purchase).
+
+**Automatic top-up:** The validator app includes built-in automation that configures target throughput and automatically purchases traffic to sustain it, preventing submission failures.
+
+**Special cases:**
+- Super Validator components (participants, mediators, sequencers) have **unlimited traffic** — no fees
+- Confirmation responses can optionally be free via `free_confirmation_responses` parameter
+
+### Fee Economics — Burn-Mint Model
+
+- Fees are denominated in **USD** but settled by **burning CC** at market rate
+- Burned CC is removed from circulation permanently
+- New CC is minted and distributed as rewards
+- Supply grows or shrinks based on real network usage
+- Avoids gas market volatility seen in ETH/BTC
+
+### Reward System
+
+Mining rounds occur every **10 minutes**. Stakeholders receive coupons redeemable for CC minting. **Critical: coupons must be redeemed in the following mining round or they are permanently lost.**
+
+| Reward Type | Who Earns | Mechanism |
+|---|---|---|
+| Validator Liveness | All validators | Binary proof-of-life: online and connected to Global Synchronizer |
+| Validator Activeness | Active validators | Discounts on self-purchased traffic |
+| Transaction Rewards | Validators with active parties | Portion of fees returned when hosted parties transact ("cashback") |
+| App Provider Rewards | App developers | Based on traffic generated by their applications ("perpetual grant program") |
+| Super Validator Rewards | Super Validators only | For securing Global Synchronizer infrastructure |
+
+**Reward distribution phases:**
+
+| Phase | Period | Super Validators | App Providers | Validators/Users |
+|---|---|---|---|---|
+| Initial | Jul-Dec 2024 | ~80% | ~15% | ~5% |
+| Current | 2025 — mid-2029 | 20% | up to 62% | remaining |
+| Long-term | Post-2029 | Further reduction | Dominant share | Growing share |
+
+Top applications have earned 100M-500M CC per month (Hashnote USYC, 3Trade, Brale cited as examples).
+
+---
+
+## 15. Cryptographic Key Architecture and Trust Boundaries
+
+### Key Types
+
+| Key Type | Purpose | Where Stored |
+|---|---|---|
+| Root namespace key | Trust anchor for entire namespace; signs NamespaceDelegation | Cold storage (HSM in separate facility) — **never on the running node** |
+| Intermediate delegation keys | Delegated authority with restrictions | Secure storage; can be on-node or in KMS |
+| Signing keys | Authorize topology transactions, sign protocol messages | Node-local or external KMS |
+| Encryption keys | Decrypt transaction views, protect confidentiality | Node-local or external KMS |
+| Session encryption keys | Short-lived ephemeral keys for optimized encryption | In-memory only; never persisted |
+
+### Delegation Hierarchy
+
+```
+Root Certificate (self-signed: namespace = target key = signing key)
+  └─ NamespaceDelegation (CanSignAllMappings)
+       └─ NamespaceDelegation (CanSignAllButNamespaceDelegations)  ← daily operational key
+            └─ NamespaceDelegation (CanSignSpecificMappings)       ← compartmentalized
+                 └─ OwnerToKeyMapping (declares signing + encryption keys for node)
+```
+
+### Trust Boundary Analysis — Who Holds What
+
+| Entity | Keys Held | Data Accessible |
+|---|---|---|
+| Bank (party owner) | Root namespace key (always); operational keys if self-hosted or via KMS | All contract data for own parties |
+| Hosting provider (Model A) | Signing + encryption keys on their infra | Full PCS, ACJ, decrypted views — same as the bank |
+| Hosting provider (Model B/KMS) | No key material; calls bank KMS for every op | Encrypted DB contents; cannot decrypt independently |
+| Synchronizer sequencer | Own authentication keys only | Encrypted envelopes, timestamps, recipient IDs — **no payloads** |
+| Synchronizer mediator | Own authentication keys only | Informee tree (who confirms), root hashes, confirmation responses — **no view contents** |
+| Other participants | Own keys only | Only views they are informees of |
+
+### Key Loss Implications
+
+- **Root namespace key loss**: Cannot perform namespace-level operations (delegations, identity changes). Existing operations continue but namespace authority is permanently lost.
+- **Encryption key loss**: Cannot decrypt future transaction views. Past data in PCS remains accessible (already decrypted and stored).
+- **Signing key loss**: Cannot authorize transactions or topology changes. Must rotate to new keys using higher-level delegation.
+- **All keys lost**: Party identity effectively destroyed. Assets may require counterparty coordination to recover.
+
+### Recommended Key Architecture for Banks
+
+1. Root namespace key → geographically redundant HSMs (2+ locations), offline
+2. Intermediate delegation key (CanSignAllButNamespaceDelegations) → online KMS with audit logging
+3. Operational signing/encryption keys → KMS with IAM-controlled access; validator node calls KMS APIs
+4. Session keys → in-memory on validator; ephemeral, auto-rotated
+
+---
+
+## 16. Node Resiliency and Disaster Recovery — Technical Details
+
+### Recovery Layer Details
+
+**Layer 1 — Automated Self-Healing:**
+- `SequencerClient` manages automatic reconnection and failover
+- DB transient failures retried with backoff
+- Warnings emitted; no operator intervention needed
+
+**Layer 2 — Crash/Restart Recovery:**
+- On JVM restart, node re-creates consistent state from persisted PostgreSQL stores
+- Replays from last processed sequencer timestamp
+- Command deduplication table ensures no duplicate processing after catch-up
+- In-flight submissions may time out at mediator during downtime → recorded as rollbacks
+
+**Layer 3 — Standard Disaster Recovery:**
+- Restore PostgreSQL from backup (must be **< 30 days old** — sequencer prunes beyond this)
+- Node resubscribes to synchronizer → replays all committed transactions since backup timestamp
+- ACS commitments (periodic crypto hashes between participant pairs) verify recovered state matches counterparty's view
+- Recovery validation: search logs for `CommitmentPeriod` entries; target "Commitment correct for sender" messages
+
+**Layer 4 — Manual Repair:**
+- Requires `features.enable-repair-commands = yes` in canton config
+- Participant **must be disconnected** from affected synchronizer
+- No in-flight requests allowed
+
+Available commands:
+| Command | Use Case |
+|---|---|
+| `participant.repair.add_contracts` | Manually add contracts to ACS (re-computes metadata) |
+| `participant.repair.purge_contracts` | Remove contracts from ACS (last resort for corruption) |
+| `participant.repair.change_domain` | Move contracts to different synchronizer (migration) |
+| `participant.repair.ignore_events` | Skip faulty transactions during recovery |
+| `participant.repair.import_acs()` | Import ACS snapshot (from scan APIs — disaster recovery) |
+| `participant.repair.download` / `upload` | Export/import ACS snapshots |
+
+### 30-Day Backup Window — Critical Constraint
+
+The synchronizer prunes transaction history after ~30 days. If a database backup is older than 30 days, the synchronizer cannot provide the missing transaction history for replay. This results in:
+- **Standard replay impossible** — the gap between backup and current state cannot be bridged
+- Must fall back to Layer 4 repair: import ACS from scan APIs (if available), manual contract reconciliation
+- **Operational imperative**: Enforce backup cadence with monitoring and alerting; never let backups exceed 25 days as safety margin
+
+### Synchronizer Failure Scenarios
+
+**Partial sequencer failure (BFT):**
+- Global Synchronizer uses 2/3 majority BFT consensus
+- Tolerates up to 1/3 of sequencer nodes failing
+- Remaining honest sequencers continue ordering
+
+**Full synchronizer failure:**
+- All participants connected to that synchronizer are stalled
+- Pending transactions time out at mediator
+- Contracts remain in last committed state
+
+**Permanent synchronizer loss — recovery workflow:**
+1. Deploy new synchronizer
+2. Participants connect temporarily (initialize identity state on new synchronizer)
+3. Disconnect all participants
+4. Run `repair.change_domain` on each participant to reassign contracts from old → new synchronizer
+5. Reconnect participants to new synchronizer
+
+### Super Validator Disaster Recovery
+
+Three documented approaches:
+
+1. **Single node corruption**: Restore from backups, scale K8s to zero, restore storage, scale back up, allow catch-up from peers
+2. **Catastrophic SV failure**: Extract identities from backup (`jq '.identities.participant' backup.json`), wait for governance vote to offboard, deploy standalone validator with extracted identities, transfer assets to newly onboarded SV
+3. **Network-wide CometBFT failure**: Coordinate all SVs on single recovery timestamp, dump data from SV app API, construct migration dump, redeploy
+
+**Caveat**: Single-node restoration from backups is documented as "not yet tested enough to be advisable for production" (current Splice docs).
+
+### Recommended Safeguarding Architecture for Banks
+
+1. **PostgreSQL HA**: Streaming replication with automatic failover (managed cloud PG or Patroni)
+2. **Backup cadence**: Daily backups, weekly tested restores, strict < 25-day age enforcement
+3. **ACS commitment monitoring**: Alert on mismatches — early detection of state divergence between participants
+4. **Key backup**: Root key in geographically redundant HSMs; operational keys in replicated KMS with audit trails
+5. **Multi-region standby**: For critical deployments, secondary-region standby node with replicated database (warm standby)
+6. **Monitoring dashboards**: Traffic consumption (prevent denial from exhaustion), node liveness, sequencer subscription health, ACS commitment status, reward coupon redemption (avoid permanent loss from missed 10-min window)
+7. **Runbook**: Documented procedures for each recovery layer with tested playbooks
+
+---
+
+## 17. Regulatory Considerations for Node Hosting
+
+### Why Hosting Location Matters for Banks
+
+**Data Residency:**
+- Canton distributes data on need-to-know basis (unlike public blockchains with global replication)
+- Self-hosted: bank chooses jurisdiction directly
+- Third-party hosted: must contractually enforce data location; verify provider's data center locations
+- Relevant frameworks: GDPR, MAS TRM (Singapore), SAMA data sovereignty (Saudi), HKMA, OCC (US)
+
+**Key Custody:**
+- Root namespace key = trust anchor for all identity operations
+- Loss of private keys = inability to prove asset ownership; potential permanent loss of access
+- Regulators expect institutions to maintain exclusive control over material signing keys
+- External KMS with audit logging provides both control and evidence trail
+
+**Operational Risk:**
+- Validator downtime = bank's parties cannot transact
+- Liveness rewards stop during downtime (binary)
+- Third-party provider failure = concentration risk
+- Some regulators require multi-vendor or self-hosted strategies for critical infrastructure
+
+### Canton's Regulatory Design Principles
+
+Canton operates on the principle: **"same risk, same activity, same regulation"** — designed to function under existing models of regulation without requiring new frameworks.
+
+Key regulatory features:
+- **Supervisory access**: Regulators can be permissioned as **observer parties** with real-time, immutable, read-only view of all supervised transactions
+- **Automated regulatory reporting**: Every trade/settlement can auto-generate cryptographically proven reports sent directly to the relevant regulator
+- **KYC/AML compliance**: Selective connection capability; institutions control which parties they transact with
+- **Participant screening**: All participants screened before network connection (invite-only / sponsorship model)
+- **Audit trail**: Tamper-proof, cryptographically verifiable transaction history
+- **Basel compliance**: Tokenized assets designed to meet Basel Committee criteria; institutions never lose control of assets or data
+
+---
+
 ## Sources
 
 - [Canton Whitepaper](https://www.canton.io/publications/canton-whitepaper.pdf)
@@ -547,3 +852,17 @@ For workflows spanning multiple consortiums, the **Global Synchronizer** coordin
 - [Global Synchronizer](https://www.canton.network/global-synchronizer)
 - [Canton Key Concepts (3.4)](https://docs.digitalasset.com/build/3.4/overview/key_concepts.html)
 - [Ledger API Migration Guide (3.4)](https://docs.digitalasset.com/build/3.4/reference/lapi-migration-guide.html)
+- [Canton Foundation Validators](https://canton.foundation/validators/)
+- [Blockdaemon Canton](https://www.blockdaemon.com/protocols/canton)
+- [Blockdaemon Institutional Vault — Canton](https://www.blockdaemon.com/blog/blockdaemon-expands-institutional-access-to-the-canton-network-with-institutional-vault-tm-2)
+- [How Canton Works — Blockdaemon](https://www.blockdaemon.com/blog/how-canton-works)
+- [Canton Coin: Rewarding Utility](https://www.canton.network/blog/canton-coin-rewarding-utility)
+- [Canton FAQ](https://www.canton.network/faq)
+- [Canton Traffic Management (3.4)](https://docs.digitalasset.com/overview/3.4/explanations/canton/traffic-management.html)
+- [Global Synchronizer Traffic Fees](https://docs.sync.global/deployment/traffic.html)
+- [Canton Tokenomics and Rewards](https://docs.digitalasset.com/integrate/devnet/tokenomics-and-rewards/index.html)
+- [Canton Regulatory Perspective](https://www.canton.network/blog/the-canton-network-a-regulatory-perspective-1)
+- [Canton Institutional Privacy](https://www.canton.network/blog/how-canton-network-delivers-institutional-grade-privacy)
+- [How to Get Started with a Validator](https://www.canton.network/blog/how-to-get-started-with-a-validator-on-canton)
+- [Validator Disaster Recovery](https://docs.sync.global/validator_operator/validator_disaster_recovery.html)
+- [SV Restore](https://docs.dev.sync.global/sv_operator/sv_restore.html)
