@@ -593,7 +593,7 @@ Ecosystem materials categorize participants into several broad roles:[12][1][10]
 - **Service providers**: Custodians, compliance and KYC services, and other institutional middleware.
 - **End users**: Financial institutions and corporates using Canton-based applications for real-world asset flows.
 
-Concrete examples include major global banks (such as Goldman Sachs, Bank of America, Citi, JP Morgan, BNP Paribas, HSBC, BNY Mellon, and State Street) participating as application providers, validators, or custodians in the ecosystem. Other participants include exchanges, digital asset custodians like BitGo, and consulting firms supporting application design and validation.[10][12][14][11][8]
+Concrete examples include major global banks (such as Goldman Sachs, Bank of America, Citi, Major Bank, BNP Paribas, HSBC, BNY Mellon, and State Street) participating as application providers, validators, or custodians in the ecosystem. Other participants include exchanges, digital asset custodians like BitGo, and consulting firms supporting application design and validation.[10][12][14][11][8]
 
 ```mermaid
 graph TB
