@@ -1,0 +1,715 @@
+-- ============================================================================
+-- DEPOSIT TOKEN — Mock Implementation (Canton Token Standard Compliant)
+-- Canton Network / Daml Smart Contract
+-- ============================================================================
+--
+-- Party Roles:
+--   Issuer        → The regulated bank entity (e.g. Bank-A) that mints/burns tokens
+--   Operator      → Operations team managing day-to-day token lifecycle (extension)
+--   Regulator     → Compliance/regulatory authority with freeze & force transfer powers
+--   Owner         → Current token holder
+--   Receiver      → Recipient in transfer scenarios
+--
+-- Standard Lifecycle (§5.2):
+--   1. Mint        → Issuer creates new tokens for a credentialed owner
+--   2. Transfer    → Owner sends tokens to a credentialed receiver
+--   3. Redeem      → Owner burns tokens (single-step, standard-compliant)
+--
+-- Extensions (beyond standard):
+--   4. RequestBurn    → Owner-initiated burn with operator approval
+--   5. ForceTransfer  → Regulator compels movement of tokens between parties
+--   6. Freeze/Unfreeze → Regulator locks/unlocks an owner's token
+--   7. Contestation    → On-ledger audit trail for contested regulatory actions
+--
+-- ============================================================================
+
+module DepositToken where
+
+import Daml.Script
+import DA.Time (days)
+import DA.Optional (fromSome)
+import DA.List (elem)
+
+-- ============================================================================
+-- TYPES & ENUMS
+-- ============================================================================
+
+-- | Standard: KYC/AML status for credential-gated operations (§5.1)
+data KycStatus
+  = Active
+  | Suspended
+  | Revoked
+    deriving (Eq, Show)
+
+-- | Standard: Token type discriminator (§5.2)
+data TokenType
+  = DEPO
+    deriving (Eq, Show)
+
+data FreezeReason
+  = SanctionsHit
+  | FraudInvestigation
+  | CourtOrder
+  | RegulatoryHold
+  | AMLAlert
+    deriving (Eq, Show)
+
+data ForceTransferReason
+  = CourtOrderedSeizure
+  | RegulatoryRecovery
+  | InsolvencyProceeding
+  | SanctionsEnforcement
+    deriving (Eq, Show)
+
+data BurnReason
+  = Redemption
+  | Expiry
+  | RegulatoryDestruction
+  | ErrorCorrection
+    deriving (Eq, Show)
+
+data TokenMetadata = TokenMetadata
+  with
+    tokenId        : Text
+    mintedAt       : Time
+    lastTransferAt : Optional Time
+    memo           : Optional Text
+  deriving (Eq, Show)
+
+
+-- ============================================================================
+-- CREDENTIALS CONTRACT (§5.1)
+-- ============================================================================
+
+template Credential
+  with
+    issuer             : Party
+    holder             : Party
+    kycStatus          : KycStatus
+    jurisdiction       : Text
+    permissionedTokens : [TokenType]
+    issuedAt           : Time
+    expiresAt          : Optional Time
+  where
+    signatory issuer
+    observer  holder
+
+    choice UpdateKycStatus : ContractId Credential
+      with
+        newStatus : KycStatus
+      controller issuer
+      do create this with kycStatus = newStatus
+
+    choice RevokeCredential : ()
+      controller issuer
+      do return ()
+
+
+-- ============================================================================
+-- CORE TOKEN CONTRACT (§5.2 + Extensions)
+-- ============================================================================
+
+template DepositToken
+  with
+    issuer    : Party
+    operator  : Party       -- Extension: ops team with delegated authority
+    regulator : Party
+    owner     : Party
+    amount    : Decimal
+    currency  : Text        -- Standard: ISO 4217 (e.g. "USD")
+    tokenType : TokenType   -- Standard: DEPO
+    mintRef   : Text        -- Standard: Internal Ledger txn_ref
+    isFrozen  : Bool        -- Extension: regulatory freeze flag
+    metadata  : TokenMetadata
+  where
+    signatory issuer, owner
+    observer  regulator, operator
+
+    ensure amount > 0.0
+
+    -- Standard: Transfer (§5.2) — credential-gated
+    choice Transfer : (ContractId DepositToken, Optional (ContractId DepositToken))
+      with
+        receiver              : Party
+        transferAmount        : Decimal
+        transferMemo          : Optional Text
+        receiverCredentialCid : ContractId Credential
+      controller owner
+      do
+        assertMsg "Token is frozen — transfer blocked" (not isFrozen)
+        assertMsg "Transfer amount must be positive" (transferAmount > 0.0)
+        assertMsg "Insufficient balance" (transferAmount <= amount)
+        assertMsg "Cannot transfer to self" (receiver /= owner)
+
+        receiverCred <- fetch receiverCredentialCid
+        assertMsg "Receiver credential must be ACTIVE" (receiverCred.kycStatus == Active)
+        assertMsg "Receiver credential holder mismatch" (receiverCred.holder == receiver)
+        assertMsg "Receiver not permissioned for this token type"
+          (tokenType `elem` receiverCred.permissionedTokens)
+
+        now <- getTime
+
+        receiverTokenCid <- create this with
+          owner = receiver
+          amount = transferAmount
+          metadata = metadata with
+            lastTransferAt = Some now
+            memo = transferMemo
+
+        remainderCid <- if transferAmount < amount
+          then do
+            cid <- create this with
+              amount = amount - transferAmount
+              metadata = metadata with
+                lastTransferAt = Some now
+            return (Some cid)
+          else
+            return None
+
+        return (receiverTokenCid, remainderCid)
+
+    -- Standard: Redeem (§5.2) — single-step burn
+    choice Redeem : ()
+      controller owner
+      do
+        assertMsg "Token is frozen — redeem blocked" (not isFrozen)
+        return ()
+
+    -- Extension: two-step burn with operator approval
+    choice RequestBurn : ContractId BurnRequest
+      with
+        burnAmount : Decimal
+        reason     : BurnReason
+      controller owner
+      do
+        assertMsg "Token is frozen — burn request blocked" (not isFrozen)
+        assertMsg "Burn amount must be positive" (burnAmount > 0.0)
+        assertMsg "Insufficient balance for burn" (burnAmount <= amount)
+        now <- getTime
+
+        create BurnRequest with
+          issuer
+          operator
+          regulator
+          owner
+          burnAmount
+          reason
+          requestedAt = now
+          sourceTokenCid = self
+
+
+-- ============================================================================
+-- MINT PROPOSAL — Two-step mint with credential validation
+-- ============================================================================
+
+template MintProposal
+  with
+    issuer      : Party
+    operator    : Party
+    regulator   : Party
+    owner       : Party
+    amount      : Decimal
+    currency    : Text        -- Standard: ISO 4217
+    tokenType   : TokenType   -- Standard: DEPO
+    mintRef     : Text        -- Standard: Internal Ledger txn_ref
+    memo        : Optional Text
+    proposedAt  : Time
+  where
+    signatory issuer
+    observer  owner, regulator, operator
+
+    ensure amount > 0.0
+
+    choice AcceptMint : ContractId DepositToken
+      with
+        ownerCredentialCid : ContractId Credential
+      controller owner
+      do
+        ownerCred <- fetch ownerCredentialCid
+        assertMsg "Owner credential must be ACTIVE" (ownerCred.kycStatus == Active)
+        assertMsg "Owner credential holder mismatch" (ownerCred.holder == owner)
+        assertMsg "Owner not permissioned for this token type"
+          (tokenType `elem` ownerCred.permissionedTokens)
+
+        now <- getTime
+        let tokenId = show issuer <> "-" <> show owner <> "-" <> show now
+        create DepositToken with
+          issuer
+          operator
+          regulator
+          owner
+          amount
+          currency
+          tokenType
+          mintRef
+          isFrozen = False
+          metadata = TokenMetadata with
+            tokenId
+            mintedAt = now
+            lastTransferAt = None
+            memo
+
+    choice RejectMint : ()
+      controller owner
+      do return ()
+
+    choice CancelMint : ()
+      controller issuer
+      do return ()
+
+
+-- ============================================================================
+-- BURN REQUEST — Owner-initiated redemption, requires issuer approval
+-- ============================================================================
+
+template BurnRequest
+  with
+    issuer         : Party
+    operator       : Party
+    regulator      : Party
+    owner          : Party
+    burnAmount     : Decimal
+    reason         : BurnReason
+    requestedAt    : Time
+    sourceTokenCid : ContractId DepositToken
+  where
+    signatory issuer, owner
+    observer  regulator, operator
+
+    choice ApproveBurn : Optional (ContractId DepositToken)
+      controller operator
+      do
+        sourceToken <- fetch sourceTokenCid
+        archive sourceTokenCid
+        now <- getTime
+
+        if burnAmount < sourceToken.amount
+          then do
+            cid <- create sourceToken with
+              amount = sourceToken.amount - burnAmount
+              metadata = sourceToken.metadata with
+                lastTransferAt = Some now
+                memo = Some ("Partial burn: " <> show burnAmount <> " " <> show reason)
+            return (Some cid)
+          else
+            return None
+
+    choice RejectBurn : ()
+      with
+        rejectionReason : Text
+      controller operator
+      do return ()
+
+
+-- ============================================================================
+-- FREEZE ORDER — Regulator freezes an owner's token
+-- ============================================================================
+
+template FreezeOrder
+  with
+    regulator    : Party
+    issuer       : Party
+    owner        : Party
+    targetToken  : ContractId DepositToken
+    reason       : FreezeReason
+    orderedAt    : Time
+    caseReference: Text
+  where
+    signatory regulator
+    observer  issuer, owner
+
+    choice ExecuteFreeze : ContractId DepositToken
+      controller issuer
+      do
+        token <- fetch targetToken
+        assertMsg "Token is already frozen" (not token.isFrozen)
+        now <- getTime
+        archive targetToken
+        create token with
+          isFrozen = True
+          metadata = token.metadata with
+            lastTransferAt = Some now
+            memo = Some ("FROZEN: " <> show reason <> " | Ref: " <> caseReference)
+
+    choice ContestFreeze : ContractId FreezeContestation
+      with
+        contestReason : Text
+      controller owner
+      do
+        now <- getTime
+        create FreezeContestation with
+          regulator
+          issuer
+          owner
+          freezeReason = reason
+          caseReference
+          contestReason
+          contestedAt = now
+
+
+-- ============================================================================
+-- UNFREEZE ORDER — Regulator lifts a freeze
+-- ============================================================================
+
+template UnfreezeOrder
+  with
+    regulator     : Party
+    issuer        : Party
+    owner         : Party
+    frozenToken   : ContractId DepositToken
+    caseReference : Text
+  where
+    signatory regulator
+    observer  issuer, owner
+
+    choice ExecuteUnfreeze : ContractId DepositToken
+      controller issuer
+      do
+        token <- fetch frozenToken
+        assertMsg "Token is not frozen" token.isFrozen
+        now <- getTime
+        archive frozenToken
+        create token with
+          isFrozen = False
+          metadata = token.metadata with
+            lastTransferAt = Some now
+            memo = Some ("UNFROZEN | Ref: " <> caseReference)
+
+
+-- ============================================================================
+-- FORCE TRANSFER ORDER — Regulator-compelled movement of tokens
+-- ============================================================================
+
+template ForceTransferOrder
+  with
+    regulator      : Party
+    issuer         : Party
+    operator       : Party
+    fromOwner      : Party
+    toReceiver     : Party
+    targetToken    : ContractId DepositToken
+    transferAmount : Decimal
+    reason         : ForceTransferReason
+    caseReference  : Text
+    orderedAt      : Time
+  where
+    signatory regulator
+    observer  issuer, fromOwner, toReceiver, operator
+
+    ensure transferAmount > 0.0
+
+    choice ExecuteForceTransfer : (ContractId DepositToken, Optional (ContractId DepositToken))
+      controller issuer
+      do
+        token <- fetch targetToken
+        assertMsg "Transfer amount exceeds token balance"
+          (transferAmount <= token.amount)
+        now <- getTime
+        archive targetToken
+
+        receiverCid <- create token with
+          owner = toReceiver
+          amount = transferAmount
+          isFrozen = False
+          metadata = token.metadata with
+            lastTransferAt = Some now
+            memo = Some ("FORCE TRANSFER: " <> show reason <> " | Ref: " <> caseReference)
+
+        remainderCid <- if transferAmount < token.amount
+          then do
+            cid <- create token with
+              amount = token.amount - transferAmount
+              metadata = token.metadata with
+                lastTransferAt = Some now
+                memo = Some ("Remainder after force transfer | Ref: " <> caseReference)
+            return (Some cid)
+          else
+            return None
+
+        return (receiverCid, remainderCid)
+
+    choice ContestForceTransfer : ContractId ForceTransferContestation
+      with
+        contestReason : Text
+      controller fromOwner
+      do
+        now <- getTime
+        create ForceTransferContestation with
+          regulator
+          issuer
+          fromOwner
+          toReceiver
+          transferAmount
+          reason
+          caseReference
+          contestReason
+          contestedAt = now
+
+
+-- ============================================================================
+-- AUDIT / CONTESTATION RECORDS
+-- ============================================================================
+
+template FreezeContestation
+  with
+    regulator     : Party
+    issuer        : Party
+    owner         : Party
+    freezeReason  : FreezeReason
+    caseReference : Text
+    contestReason : Text
+    contestedAt   : Time
+  where
+    signatory regulator, owner
+    observer  issuer
+
+    choice ResolveContestation : ()
+      controller regulator
+      do return ()
+
+
+template ForceTransferContestation
+  with
+    regulator      : Party
+    issuer         : Party
+    fromOwner      : Party
+    toReceiver     : Party
+    transferAmount : Decimal
+    reason         : ForceTransferReason
+    caseReference  : Text
+    contestReason  : Text
+    contestedAt    : Time
+  where
+    signatory regulator, fromOwner
+    observer  issuer, toReceiver
+
+    choice ResolveForceTransferContestation : ()
+      controller regulator
+      do return ()
+
+
+-- ============================================================================
+-- TEST SCENARIO — Full lifecycle with credential gating
+-- ============================================================================
+
+fullLifecycleTest : Script ()
+fullLifecycleTest = script do
+
+  -- =========================================
+  -- SETUP: Allocate parties
+  -- =========================================
+  issuer    <- allocateParty "IssuingBank"
+  operator  <- allocateParty "OpsTeam"
+  regulator <- allocateParty "RegAuthority"
+  alice     <- allocateParty "AliceCorp"
+  bob       <- allocateParty "BobBank"
+  charlie   <- allocateParty "CharlieSuspended"
+
+  now <- getTime
+
+  -- =========================================
+  -- STEP 0: CREDENTIALS — Onboard parties with KYC
+  -- =========================================
+  debug ">>> STEP 0: Creating credentials for Alice, Bob, and Charlie"
+
+  aliceCredCid <- submit issuer do
+    createCmd Credential with
+      issuer
+      holder          = alice
+      kycStatus       = Active
+      jurisdiction    = "US"
+      permissionedTokens = [DEPO]
+      issuedAt        = now
+      expiresAt       = None
+
+  bobCredCid <- submit issuer do
+    createCmd Credential with
+      issuer
+      holder          = bob
+      kycStatus       = Active
+      jurisdiction    = "US"
+      permissionedTokens = [DEPO]
+      issuedAt        = now
+      expiresAt       = None
+
+  charlieCredCid <- submit issuer do
+    createCmd Credential with
+      issuer
+      holder          = charlie
+      kycStatus       = Suspended
+      jurisdiction    = "US"
+      permissionedTokens = [DEPO]
+      issuedAt        = now
+      expiresAt       = None
+
+  debug "   OK Credentials created: Alice=Active, Bob=Active, Charlie=Suspended"
+
+  -- =========================================
+  -- STEP 1: MINT — Issuer proposes, Alice accepts (credential-gated)
+  -- =========================================
+  debug ">>> STEP 1: Minting 1,000,000 USD deposit tokens for Alice"
+
+  mintProposalCid <- submit issuer do
+    createCmd MintProposal with
+      issuer
+      operator
+      regulator
+      owner       = alice
+      amount      = 1_000_000.0
+      currency    = "USD"
+      tokenType   = DEPO
+      mintRef     = "TXN-2025-001"
+      memo        = Some "Initial deposit — wire ref #TXN-2025-001"
+      proposedAt  = now
+
+  aliceTokenCid <- submit alice do
+    exerciseCmd mintProposalCid AcceptMint with
+      ownerCredentialCid = aliceCredCid
+
+  aliceToken <- queryContractId alice aliceTokenCid
+  let t = fromSome aliceToken
+  debug $ "   OK Alice balance: " <> show t.amount <> " " <> t.currency
+
+  -- =========================================
+  -- STEP 2: TRANSFER — Alice sends 250k to Bob (credential-gated)
+  -- =========================================
+  debug ">>> STEP 2: Alice transfers 250,000 to Bob"
+
+  (bobTokenCid, aliceRemainderCid) <- submit alice do
+    exerciseCmd aliceTokenCid Transfer with
+      receiver              = bob
+      transferAmount        = 250_000.0
+      transferMemo          = Some "Payment for services — Invoice #INV-9042"
+      receiverCredentialCid = bobCredCid
+
+  let aliceTokenCid2 = fromSome aliceRemainderCid
+  bobToken <- queryContractId bob bobTokenCid
+  debug $ "   OK Bob received: " <> show (fromSome bobToken).amount
+  aliceToken2 <- queryContractId alice aliceTokenCid2
+  debug $ "   OK Alice remainder: " <> show (fromSome aliceToken2).amount
+
+  -- =========================================
+  -- STEP 2b: CREDENTIAL GATING — Transfer to suspended party must fail
+  -- =========================================
+  debug ">>> STEP 2b: Attempting transfer to Charlie (SUSPENDED credential)"
+
+  submitMustFail alice do
+    exerciseCmd aliceTokenCid2 Transfer with
+      receiver              = charlie
+      transferAmount        = 10_000.0
+      transferMemo          = Some "This should fail"
+      receiverCredentialCid = charlieCredCid
+
+  debug "   OK Transfer correctly blocked — receiver credential SUSPENDED"
+
+  -- =========================================
+  -- STEP 3: FREEZE — Regulator freezes Bob's token (AML alert)
+  -- =========================================
+  debug ">>> STEP 3: Regulator freezes Bob's token (AML investigation)"
+
+  freezeOrderCid <- submit regulator do
+    createCmd FreezeOrder with
+      regulator
+      issuer
+      owner         = bob
+      targetToken   = bobTokenCid
+      reason        = AMLAlert
+      orderedAt     = now
+      caseReference = "AML-2025-00847"
+
+  frozenBobTokenCid <- submit issuer do
+    exerciseCmd freezeOrderCid ExecuteFreeze
+
+  frozenBob <- queryContractId bob frozenBobTokenCid
+  debug $ "   OK Bob token frozen: " <> show (fromSome frozenBob).isFrozen
+
+  submitMustFail bob do
+    exerciseCmd frozenBobTokenCid Transfer with
+      receiver              = alice
+      transferAmount        = 50_000.0
+      transferMemo          = Some "Attempted transfer while frozen"
+      receiverCredentialCid = aliceCredCid
+
+  debug "   OK Transfer correctly blocked on frozen token"
+
+  -- =========================================
+  -- STEP 4: FORCE TRANSFER — Regulator seizes 100k from Bob
+  -- =========================================
+  debug ">>> STEP 4: Regulator orders force transfer of 100,000 from Bob to Alice"
+
+  forceTransferCid <- submit regulator do
+    createCmd ForceTransferOrder with
+      regulator
+      issuer
+      operator
+      fromOwner      = bob
+      toReceiver     = alice
+      targetToken    = frozenBobTokenCid
+      transferAmount = 100_000.0
+      reason         = SanctionsEnforcement
+      caseReference  = "ENF-2025-00291"
+      orderedAt      = now
+
+  (aliceRecoveredCid, bobRemainderCid) <- submit issuer do
+    exerciseCmd forceTransferCid ExecuteForceTransfer
+
+  aliceRecovered <- queryContractId alice aliceRecoveredCid
+  debug $ "   OK Alice recovered: " <> show (fromSome aliceRecovered).amount
+  let bobRemainder = fromSome bobRemainderCid
+  bobRem <- queryContractId bob bobRemainder
+  debug $ "   OK Bob remainder (still frozen): " <> show (fromSome bobRem).amount
+    <> " | frozen=" <> show (fromSome bobRem).isFrozen
+
+  -- =========================================
+  -- STEP 5: UNFREEZE — Regulator lifts freeze after investigation
+  -- =========================================
+  debug ">>> STEP 5: Regulator unfreezes Bob's remaining tokens"
+
+  unfreezeOrderCid <- submit regulator do
+    createCmd UnfreezeOrder with
+      regulator
+      issuer
+      owner         = bob
+      frozenToken   = bobRemainder
+      caseReference = "AML-2025-00847-RESOLVED"
+
+  bobUnfrozenCid <- submit issuer do
+    exerciseCmd unfreezeOrderCid ExecuteUnfreeze
+
+  bobUnfrozen <- queryContractId bob bobUnfrozenCid
+  debug $ "   OK Bob token unfrozen: " <> show (not (fromSome bobUnfrozen).isFrozen)
+
+  -- =========================================
+  -- STEP 6: BURN — Alice redeems 500k (operator-approved flow)
+  -- =========================================
+  debug ">>> STEP 6: Alice burns (redeems) 500,000 tokens via operator approval"
+
+  burnRequestCid <- submit alice do
+    exerciseCmd aliceTokenCid2 RequestBurn with
+      burnAmount = 500_000.0
+      reason     = Redemption
+
+  aliceFinalCid <- submit operator do
+    exerciseCmd burnRequestCid ApproveBurn
+
+  case aliceFinalCid of
+    Some cid -> do
+      finalToken <- queryContractId alice cid
+      debug $ "   OK Alice final balance after burn: " <> show (fromSome finalToken).amount
+    None ->
+      debug "   OK Alice token fully burned"
+
+  -- =========================================
+  -- STEP 7: REDEEM — Alice redeems recovered token (standard single-step)
+  -- =========================================
+  debug ">>> STEP 7: Alice redeems 100,000 recovered tokens (standard Redeem)"
+
+  submit alice do
+    exerciseCmd aliceRecoveredCid Redeem
+
+  debug "   OK Token redeemed (archived/burned) via standard Redeem choice"
+
+  debug ">>> DONE Full lifecycle test complete"
+  debug "   Demonstrated: Credentials -> Mint -> Transfer -> Credential Gate -> Freeze -> ForceTransfer -> Unfreeze -> Burn -> Redeem"
+
+  return ()
