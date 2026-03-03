@@ -1,0 +1,7 @@
+*.*
+!.gitignore
+!canton-archi.md
+!detailed_plan.md
+!knowledge.md
+!mock.daml
+!mock-daml-screenshot.png
