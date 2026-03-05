@@ -1,0 +1,25 @@
+graph LR
+    subgraph BANK_NET["Bank Network (Private)"]
+        VAULT_N["Vault Cluster<br/>10.x.x.x"]
+        SIGNER_N["Signing Module<br/>10.x.x.x"]
+        ORCH_N["Orchestrator<br/>10.x.x.x"]
+    end
+
+    subgraph DMZ["DMZ / API Gateway"]
+        GW["mTLS Gateway<br/>IP Allowlisted"]
+    end
+
+    subgraph BD_NET["Blockdaemon (Cloud)"]
+        LAPI_N["Ledger API<br/>ledger.bd.example.com:6865"]
+        VAL_N["Validator Node"]
+    end
+
+    ORCH_N -->|"gRPC/mTLS"| GW
+    GW -->|"gRPC/mTLS"| LAPI_N
+    VAL_N -->|"HTTPS/mTLS<br/>(KMS API calls)"| GW
+    GW -->|"HTTPS/mTLS"| VAULT_N
+
+    style BANK_NET fill:#ecfdf5,stroke:#059669,stroke-width:2px
+    style BD_NET fill:#fff7ed,stroke:#ea580c,stroke-width:2px
+    style DMZ fill:#fefce8,stroke:#ca8a04,stroke-width:2px
+    style GW fill:#ca8a04,stroke:#333,color:#fff

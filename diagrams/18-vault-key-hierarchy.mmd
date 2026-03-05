@@ -1,0 +1,32 @@
+graph TD
+    subgraph VAULT["🔐 HashiCorp Vault (Bank-Operated)"]
+        direction TB
+        ROOT["<b>Root Namespace Key</b><br/>Ed25519 / RSA-4096<br/>Cold Storage · Air-Gapped HSM<br/>Used ONCE: bootstrap Canton identity"]
+
+        subgraph SIGNING["Transit Secrets Engine — Signing Keys"]
+            direction LR
+            NSK["<b>Namespace Signing Key</b><br/>ECDSA P-256<br/>Signs topology txns<br/>(party registration,<br/>key rotation)"]
+            TSK["<b>Transaction Signing Key</b><br/>ECDSA P-256<br/>Signs Daml commands<br/>(mint, transfer, redeem)"]
+            ASK["<b>Authentication Key</b><br/>ECDSA P-256<br/>mTLS client cert<br/>for Ledger API"]
+        end
+
+        subgraph ENCRYPTION["Transit Secrets Engine — Encryption Keys"]
+            direction LR
+            VEK["<b>View Encryption Key</b><br/>AES-256-GCM / HPKE<br/>Encrypts transaction<br/>view payloads"]
+            SEK["<b>Storage Encryption Key</b><br/>AES-256-GCM<br/>Encrypts PCS data<br/>at rest"]
+        end
+
+        ROOT -->|"delegates authority"| NSK
+        ROOT -->|"delegates authority"| TSK
+        ROOT -->|"delegates authority"| ASK
+        ROOT -->|"delegates authority"| VEK
+        ROOT -->|"delegates authority"| SEK
+    end
+
+    style VAULT fill:#f7f3ff,stroke:#7c3aed,stroke-width:3px
+    style ROOT fill:#dc2626,stroke:#333,color:#fff
+    style NSK fill:#ea580c,stroke:#333,color:#fff
+    style TSK fill:#ea580c,stroke:#333,color:#fff
+    style ASK fill:#ea580c,stroke:#333,color:#fff
+    style VEK fill:#2563eb,stroke:#333,color:#fff
+    style SEK fill:#2563eb,stroke:#333,color:#fff

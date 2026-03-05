@@ -1,0 +1,33 @@
+stateDiagram-v2
+    direction LR
+
+    [*] --> Generated: Vault generates<br/>key in HSM
+
+    Generated --> Active: Topology txn<br/>registers public key<br/>on Canton
+
+    Active --> Rotating: Rotation triggered<br/>(policy or manual)
+
+    Rotating --> Active: New key version active<br/>Old version: decrypt-only
+
+    Active --> Revoked: Compromise detected<br/>or decommission
+
+    Revoked --> [*]: Key destroyed<br/>after retention period
+
+    note right of Active
+        • Signs/encrypts new operations
+        • Vault key version = latest
+        • Canton topology reflects current key
+    end note
+
+    note right of Rotating
+        • New key version generated
+        • Old version kept for decrypt
+        • Topology txn announces rotation
+        • Grace period for propagation
+    end note
+
+    note right of Revoked
+        • Emergency topology txn
+        • All operations halt
+        • Incident response triggered
+    end note

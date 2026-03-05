@@ -5,3 +5,6 @@
 !knowledge.md
 !mock.daml
 !mock-daml-screenshot.png
+!vault-blockdaemon-kms-architecture.md
+!diagrams/
+!diagrams/**
