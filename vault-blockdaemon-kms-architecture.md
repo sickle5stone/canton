@@ -2,19 +2,23 @@
 
 ## Canton Network | Internal KMS (Vault) | Blockdaemon Node Services
 
-**Version 1.0 | March 2026 | CONFIDENTIAL — Internal Use Only**
+**Version 2.0 | March 2026 | CONFIDENTIAL — Internal Use Only**
 
 ---
 
 ## 1. Overview
 
-This document describes the interaction model between the bank's internal HashiCorp Vault (KMS) and Blockdaemon's Canton validator node infrastructure. The core principle is **key sovereignty**: the bank holds the root namespace key and all cryptographic material in Vault, while Canton (via Blockdaemon) holds only the operational references needed to invoke the Vault signing API. All transaction signing occurs internally — no private key material ever leaves the bank's trust boundary.
+This document describes the interaction model between the bank's internal HashiCorp Vault (KMS) and Blockdaemon's managed Canton validator node. The core principle is **one-time key provisioning with full segregation**:
+
+1. The bank holds the **root namespace key** in Vault — the apex of trust for its Canton identity
+2. Operational keys (signing, encryption) are **generated in Vault and provisioned once** to the Canton validator during onboarding or key rotation
+3. After provisioning, there is **zero runtime connectivity** between Vault and the Blockdaemon validator
+4. All ongoing interaction between the bank and Blockdaemon is exclusively via **Ledger API** (transactions) and **Admin API** (topology & node management)
+5. Transaction signing happens inside the bank's **Signing Module**, which retrieves unsigned transactions from the Ledger API, signs them locally using Vault, and submits signed payloads back through the Ledger API
 
 ---
 
-## 2. Key Hierarchy
-
-The bank maintains a hierarchical key structure within Vault. The root namespace key is the apex of trust; all subordinate keys derive their authority from it.
+## 2. Key Hierarchy & Ownership
 
 ```mermaid
 graph TD
@@ -22,111 +26,178 @@ graph TD
         direction TB
         ROOT["<b>Root Namespace Key</b><br/>Ed25519 / RSA-4096<br/>Cold Storage · Air-Gapped HSM<br/>Used ONCE: bootstrap Canton identity"]
 
-        subgraph SIGNING["Transit Secrets Engine — Signing Keys"]
+        subgraph BANK_KEYS["Keys Retained in Vault (Never Leave)"]
             direction LR
-            NSK["<b>Namespace Signing Key</b><br/>ECDSA P-256<br/>Signs topology txns<br/>(party registration,<br/>key rotation)"]
+            NSK["<b>Namespace Signing Key</b><br/>ECDSA P-256<br/>Signs topology txns via Admin API<br/>(party registration, key rotation)"]
             TSK["<b>Transaction Signing Key</b><br/>ECDSA P-256<br/>Signs Daml commands<br/>(mint, transfer, redeem)"]
-            ASK["<b>Authentication Key</b><br/>ECDSA P-256<br/>mTLS client cert<br/>for Ledger API"]
         end
 
-        subgraph ENCRYPTION["Transit Secrets Engine — Encryption Keys"]
+        subgraph PROVISIONED["Keys Generated in Vault, Provisioned Once to Validator"]
             direction LR
-            VEK["<b>View Encryption Key</b><br/>AES-256-GCM / HPKE<br/>Encrypts transaction<br/>view payloads"]
-            SEK["<b>Storage Encryption Key</b><br/>AES-256-GCM<br/>Encrypts PCS data<br/>at rest"]
+            VEK["<b>View Encryption Key</b><br/>AES-256-GCM / HPKE<br/>Encrypts transaction views"]
+            SEK["<b>Storage Encryption Key</b><br/>AES-256-GCM<br/>Encrypts PCS data at rest"]
+            NODEK["<b>Node Identity Key</b><br/>TLS cert for Canton protocol<br/>Inter-node communication"]
         end
 
         ROOT -->|"delegates authority"| NSK
         ROOT -->|"delegates authority"| TSK
-        ROOT -->|"delegates authority"| ASK
-        ROOT -->|"delegates authority"| VEK
-        ROOT -->|"delegates authority"| SEK
+        ROOT -->|"generates & exports"| VEK
+        ROOT -->|"generates & exports"| SEK
+        ROOT -->|"generates & exports"| NODEK
     end
 
     style VAULT fill:#f7f3ff,stroke:#7c3aed,stroke-width:3px
     style ROOT fill:#dc2626,stroke:#333,color:#fff
-    style NSK fill:#ea580c,stroke:#333,color:#fff
-    style TSK fill:#ea580c,stroke:#333,color:#fff
-    style ASK fill:#ea580c,stroke:#333,color:#fff
+    style BANK_KEYS fill:#fef2f2,stroke:#dc2626,stroke-width:2px
+    style PROVISIONED fill:#eff6ff,stroke:#2563eb,stroke-width:2px
+    style NSK fill:#dc2626,stroke:#333,color:#fff
+    style TSK fill:#dc2626,stroke:#333,color:#fff
     style VEK fill:#2563eb,stroke:#333,color:#fff
     style SEK fill:#2563eb,stroke:#333,color:#fff
+    style NODEK fill:#2563eb,stroke:#333,color:#fff
 ```
 
-### Key Roles
+### Key Ownership Matrix
 
-| Key | Purpose | Stored In | Used By | Rotation |
+| Key | Generated In | Resides In | Leaves Vault? | Purpose |
 |---|---|---|---|---|
-| **Root Namespace Key** | Bootstrap Canton identity; anchor of trust for the bank's namespace | Air-gapped HSM via Vault | Used once at onboarding, then cold storage | Manual ceremony (multi-custodian Shamir) |
-| **Namespace Signing Key** | Sign topology transactions (party registration, key rotation, delegation) | Vault Transit Engine | Token Orchestrator | Automated (90-day), announced via topology txn |
-| **Transaction Signing Key** | Sign Daml commands submitted to Ledger API | Vault Transit Engine | Token Orchestrator / Signing Module | Automated (30-day) |
-| **Authentication Key** | mTLS client certificate for gRPC connection to Blockdaemon Ledger API | Vault PKI Engine | Token Orchestrator | Automated (24h short-lived certs) |
-| **View Encryption Key** | Encrypt/decrypt Canton transaction views (privacy envelopes) | Vault Transit Engine | Blockdaemon Validator (via KMS API) | Automated (90-day) |
-| **Storage Encryption Key** | Encrypt PCS contract data at rest in PostgreSQL | Vault Transit Engine | Blockdaemon Validator (via KMS API) | Automated (180-day) |
+| **Root Namespace Key** | Vault (HSM) | Vault cold storage | Never | Bootstrap Canton identity; anchor of trust |
+| **Namespace Signing Key** | Vault (Transit) | Vault only | Never | Sign topology txns submitted via Admin API |
+| **Transaction Signing Key** | Vault (Transit) | Vault only | Never | Sign Daml commands submitted via Ledger API |
+| **View Encryption Key** | Vault (Transit) | Validator (after one-time provisioning) | Once | Canton protocol view encryption/decryption |
+| **Storage Encryption Key** | Vault (Transit) | Validator (after one-time provisioning) | Once | Encrypt PCS contract data at rest |
+| **Node Identity Key** | Vault (PKI) | Validator (after one-time provisioning) | Once | mTLS for Canton inter-node protocol |
 
 ---
 
-## 3. Trust Boundary Model
+## 3. Segregation Model
+
+After one-time key provisioning, the bank and Blockdaemon operate independently. No runtime KMS API calls. No gateway. The only channels are Ledger API and Admin API.
 
 ```mermaid
-graph LR
+graph TB
     subgraph BANK["🔒 Bank Trust Boundary"]
         direction TB
-        VAULT_SVC["<b>HashiCorp Vault</b><br/>Transit + PKI Engines<br/>FIPS 140-2 Level 3 HSM Backend"]
-        SIGNER["<b>Signing Module</b><br/>Stateless Microservice<br/>Constructs & Signs Payloads"]
-        ORCH["<b>Token Orchestrator</b><br/>Command Builder<br/>Event Consumer"]
-        AUDIT["<b>Audit Log</b><br/>Every sign/decrypt op<br/>Tamper-evident"]
+        VAULT_SVC["<b>HashiCorp Vault</b><br/>Root Key + Signing Keys<br/>FIPS 140-2 Level 3 HSM"]
+        SIGNER["<b>Signing Module</b><br/>Retrieves unsigned txns<br/>Signs via Vault<br/>Submits signed payloads"]
+        ORCH["<b>Token Orchestrator</b><br/>Business logic<br/>Event consumer"]
+        AUDIT["<b>Audit Log</b><br/>Every sign operation<br/>Tamper-evident"]
 
         ORCH --> SIGNER
-        SIGNER -->|"vault transit/sign"| VAULT_SVC
+        SIGNER -->|"transit/sign"| VAULT_SVC
         VAULT_SVC --> AUDIT
     end
 
     subgraph BD["☁️ Blockdaemon Trust Boundary"]
         direction TB
-        LAPI["<b>Ledger API</b><br/>gRPC/TLS<br/>Command & Transaction Services"]
-        VALIDATOR["<b>Canton Validator Node</b><br/>JVM/Scala · K8s<br/>Daml Engine · PCS · ACJ"]
-        PG["<b>PostgreSQL</b><br/>Encrypted at rest<br/>(bank-held keys)"]
+        LAPI["<b>Ledger API</b><br/>gRPC/TLS :6865<br/>Command + Transaction Services"]
+        AAPI["<b>Admin API</b><br/>gRPC/TLS<br/>Topology + Node Mgmt"]
+        VALIDATOR["<b>Canton Validator</b><br/>Provisioned encryption keys<br/>Provisioned node identity<br/>JVM/Scala · K8s"]
+        PG["<b>PostgreSQL</b><br/>Encrypted at rest<br/>(provisioned storage key)"]
 
         LAPI --- VALIDATOR
+        AAPI --- VALIDATOR
         VALIDATOR --- PG
     end
 
     subgraph CANTON["🔗 Canton Network"]
         direction TB
-        SEQ["<b>Sequencer</b><br/>Total-Order Multicast"]
-        MED["<b>Mediator</b><br/>Confirmation Protocol"]
+        SEQ["<b>Sequencer</b>"]
+        MED["<b>Mediator</b>"]
+        SEQ <--> MED
     end
 
-    SIGNER -->|"signed command<br/>(gRPC/mTLS)"| LAPI
-    LAPI -->|"unsigned txn<br/>(PrepareSubmission)"| SIGNER
-    VALIDATOR -->|"KMS API call<br/>(encrypt/decrypt)"| VAULT_SVC
-    VALIDATOR -->|"encrypted envelopes"| SEQ
-    SEQ <--> MED
+    SIGNER <-->|"Ledger API<br/>retrieve unsigned txn<br/>submit signed txn"| LAPI
+    SIGNER <-->|"Admin API<br/>topology txns<br/>(signed with NSK)"| AAPI
+    VALIDATOR <-->|"Canton Protocol<br/>(encrypted envelopes)"| SEQ
+
+    linkStyle 5 stroke:#059669,stroke-width:3px
+    linkStyle 6 stroke:#059669,stroke-width:3px
 
     style BANK fill:#ecfdf5,stroke:#059669,stroke-width:3px
     style BD fill:#fff7ed,stroke:#ea580c,stroke-width:3px
     style CANTON fill:#eff6ff,stroke:#2563eb,stroke-width:3px
     style VAULT_SVC fill:#dc2626,stroke:#333,color:#fff
     style SIGNER fill:#7c3aed,stroke:#333,color:#fff
+    style LAPI fill:#059669,stroke:#333,color:#fff
+    style AAPI fill:#059669,stroke:#333,color:#fff
     style SEQ fill:#2563eb,stroke:#333,color:#fff
     style MED fill:#ea580c,stroke:#333,color:#fff
 ```
 
-### What Each Boundary Controls
+### Segregation Rules
 
-| Aspect | Bank Controls | Blockdaemon Controls | Canton Network |
+| Aspect | Bank Side (Vault) | Blockdaemon Side (Validator) | Connection |
 |---|---|---|---|
-| **Private Key Material** | All keys — Vault only | None — zero access | None |
-| **Signing Operations** | Every sign op goes through Vault | Requests signing via KMS API | N/A |
-| **Decryption** | All decrypt via Vault Transit | Requests decrypt via KMS API | N/A |
-| **Validator Compute** | Defines config, monitors SLA | Operates JVM, K8s, PostgreSQL | N/A |
-| **Consensus** | Participates via validator | Hosts the infrastructure | Sequencer + Mediator |
-| **Contract Data** | Encrypted with bank keys | Stores ciphertext only | Sees encrypted envelopes only |
+| **Signing Keys** | Retained forever — never exported | No access | None at runtime |
+| **Encryption Keys** | Generated, then provisioned once | Holds provisioned copies | One-time transfer only |
+| **Transaction Signing** | Signing Module signs locally via Vault | Receives pre-signed payloads | Ledger API |
+| **Topology Changes** | Signs topology txns via Vault | Receives pre-signed topology txns | Admin API |
+| **Runtime KMS Calls** | N/A | N/A | **None — fully segregated** |
+| **Protocol Encryption** | N/A (delegated at provisioning) | Uses provisioned encryption keys locally | N/A |
 
 ---
 
-## 4. Transaction Signing Flow
+## 4. One-Time Key Provisioning Ceremony
 
-This is the core interaction: a transaction is retrieved from the Blockdaemon node via Ledger API, signed internally using the Vault-backed Signing Module, and submitted back through Ledger API with the signed payload.
+This is the only moment where key material crosses the trust boundary.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant ADMIN as Bank Key Custodians<br/>(Multi-Party Ceremony)
+    participant VAULT as HashiCorp Vault<br/>(Bank HSM)
+    participant AAPI as Admin API<br/>(Blockdaemon)
+    participant VALIDATOR as Canton Validator<br/>(Blockdaemon)
+
+    Note over ADMIN,VALIDATOR: === ONE-TIME PROVISIONING CEREMONY ===
+
+    rect rgb(254, 242, 242)
+        Note over ADMIN,VAULT: Step 1: Generate all keys in Vault
+        ADMIN->>VAULT: Generate Root Namespace Key (cold storage)
+        ADMIN->>VAULT: Generate Namespace Signing Key (retained)
+        ADMIN->>VAULT: Generate Transaction Signing Key (retained)
+        ADMIN->>VAULT: Generate View Encryption Key (to export)
+        ADMIN->>VAULT: Generate Storage Encryption Key (to export)
+        ADMIN->>VAULT: Generate Node Identity Key + TLS cert (to export)
+    end
+
+    rect rgb(239, 246, 255)
+        Note over ADMIN,VALIDATOR: Step 2: Export operational keys for validator
+        ADMIN->>VAULT: Export view-encryption-key (wrapped)
+        VAULT-->>ADMIN: Wrapped key material
+        ADMIN->>VAULT: Export storage-encryption-key (wrapped)
+        VAULT-->>ADMIN: Wrapped key material
+        ADMIN->>VAULT: Export node-identity-key + cert
+        VAULT-->>ADMIN: Key + certificate bundle
+    end
+
+    rect rgb(236, 253, 245)
+        Note over ADMIN,VALIDATOR: Step 3: Provision to validator (secure channel)
+        ADMIN->>AAPI: Provision encryption keys + node identity
+        AAPI->>VALIDATOR: Install keys into validator keystore
+        VALIDATOR-->>AAPI: Keys installed, node ready
+        AAPI-->>ADMIN: Provisioning confirmed
+    end
+
+    rect rgb(254, 252, 232)
+        Note over ADMIN,VALIDATOR: Step 4: Register public keys on Canton
+        ADMIN->>VAULT: Sign topology txn (register namespace + public keys)
+        VAULT-->>ADMIN: Signed topology transaction
+        ADMIN->>AAPI: Submit signed topology txn
+        AAPI->>VALIDATOR: Process topology transaction
+        VALIDATOR-->>AAPI: Namespace registered on Canton
+        AAPI-->>ADMIN: Canton identity active
+    end
+
+    Note over ADMIN,VALIDATOR: === SEGREGATION BEGINS ===<br/>No further key exchange.<br/>All interaction via Ledger API + Admin API only.
+```
+
+---
+
+## 5. Transaction Signing Flow (Runtime)
+
+After provisioning, the Signing Module is the only bank component that talks to Blockdaemon — exclusively via Ledger API. It retrieves unsigned transactions, signs them locally with Vault, and submits the signed payload back.
 
 ```mermaid
 sequenceDiagram
@@ -135,176 +206,184 @@ sequenceDiagram
     participant SIGNER as Signing Module
     participant VAULT as HashiCorp Vault
     participant LAPI as Ledger API<br/>(Blockdaemon)
-    participant VALIDATOR as Canton Validator<br/>(Blockdaemon)
-    participant CANTON as Canton Network<br/>(Sequencer + Mediator)
+    participant CANTON as Canton Network
 
-    Note over ORCH: Domain event received<br/>(e.g. MintRequested)
+    Note over ORCH: Domain event received<br/>(e.g. MintRequested via Kafka)
 
-    ORCH->>LAPI: 1. PrepareSubmission(DamlCommand)
+    ORCH->>SIGNER: Build Daml command (CreateCommand: DepositToken)
+
+    SIGNER->>LAPI: 1. SubmitAndWait or PrepareSubmission(command)
     activate LAPI
-    LAPI->>VALIDATOR: Parse & validate command
-    VALIDATOR-->>LAPI: Unsigned transaction envelope
-    LAPI-->>ORCH: PreparedSubmission {txn_hash, serialized_txn}
+    LAPI-->>SIGNER: Transaction to sign {txn_hash, serialized_txn}
     deactivate LAPI
 
-    ORCH->>SIGNER: 2. Sign(txn_hash, key_ref="txn-signing-key")
-    activate SIGNER
-    SIGNER->>VAULT: POST /v1/transit/sign/txn-signing-key
+    SIGNER->>VAULT: 2. POST /v1/transit/sign/txn-signing-key {hash}
     activate VAULT
-    Note over VAULT: ECDSA P-256 sign<br/>HSM-backed operation<br/>Audit log written
+    Note over VAULT: ECDSA P-256 sign<br/>HSM-backed · Audit logged<br/>Key never leaves Vault
     VAULT-->>SIGNER: {signature, key_version}
     deactivate VAULT
-    SIGNER-->>ORCH: SignedPayload {signature, key_version, algorithm}
-    deactivate SIGNER
 
-    ORCH->>LAPI: 3. ExecuteSubmission(serialized_txn, signature)
+    SIGNER->>LAPI: 3. Submit signed payload {serialized_txn, signature}
     activate LAPI
-    LAPI->>VALIDATOR: Submit signed transaction
-    VALIDATOR->>CANTON: Encrypted envelopes via Sequencer
+    Note over LAPI: Validator forwards to Canton<br/>using its provisioned<br/>encryption keys locally
+    LAPI->>CANTON: Encrypted envelopes (Sequencer)
     activate CANTON
-    Note over CANTON: Confirmation Protocol<br/>Mediator collects responses<br/>Issues verdict
-    CANTON-->>VALIDATOR: Verdict (approve/reject)
+    Note over CANTON: Confirmation Protocol<br/>Mediator verdict
+    CANTON-->>LAPI: Verdict (approve/reject)
     deactivate CANTON
-    VALIDATOR-->>LAPI: Completion event
-    LAPI-->>ORCH: 4. CompletionResponse {status, offset}
+    LAPI-->>SIGNER: 4. CompletionResponse {status, contract_id, offset}
     deactivate LAPI
 
-    Note over ORCH: Update Internal Ledger<br/>with on-chain confirmation
+    SIGNER-->>ORCH: Result {contract_id, status}
+    Note over ORCH: Update Internal Ledger
+
+    Note over VAULT,LAPI: No direct connection between<br/>Vault and Blockdaemon.<br/>Signing Module bridges the gap.
 ```
 
 ### Flow Summary
 
-| Step | Action | Where | Detail |
+| Step | Direction | Channel | What Happens |
 |---|---|---|---|
-| **1** | PrepareSubmission | Bank → Blockdaemon | Orchestrator sends Daml command; Ledger API returns unsigned txn hash |
-| **2** | Sign | Bank Internal | Signing Module calls Vault Transit API; HSM signs txn hash with ECDSA P-256 |
-| **3** | ExecuteSubmission | Bank → Blockdaemon | Signed payload submitted; validator forwards to Canton sequencer |
-| **4** | Completion | Blockdaemon → Bank | Validator receives verdict; Ledger API streams completion to orchestrator |
+| **1** | Bank → Blockdaemon | Ledger API | Signing Module sends command; gets back unsigned txn hash |
+| **2** | Bank Internal | Vault Transit API | Signing Module signs txn hash locally; key never leaves Vault |
+| **3** | Bank → Blockdaemon | Ledger API | Signed payload submitted; validator encrypts locally with provisioned keys and forwards to Canton |
+| **4** | Blockdaemon → Bank | Ledger API | Completion streamed back to Signing Module |
 
 ---
 
-## 5. Vault-to-Validator Crypto Operations
+## 6. Topology Operations via Admin API
 
-The Blockdaemon validator node must perform encryption/decryption for Canton protocol operations (view encryption, storage encryption). It does this by calling the bank's Vault API — it never holds key material.
+Topology changes (party registration, key rotation, delegation) are signed in Vault and submitted through the Admin API. The validator never needs to call back to Vault — it receives pre-signed topology transactions.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant VALIDATOR as Canton Validator<br/>(Blockdaemon)
-    participant VAULT as HashiCorp Vault<br/>(Bank KMS)
+    participant ADMIN as Bank Admin / Automation
+    participant VAULT as HashiCorp Vault
+    participant AAPI as Admin API<br/>(Blockdaemon)
+    participant VALIDATOR as Canton Validator
 
-    Note over VALIDATOR: Outbound: Encrypting a<br/>transaction view for Canton
+    Note over ADMIN: Topology change needed<br/>(e.g. key rotation, party onboarding)
 
-    VALIDATOR->>VAULT: POST /v1/transit/encrypt/view-encryption-key<br/>{plaintext: base64(view_payload)}
+    ADMIN->>VAULT: 1. Build & sign topology txn<br/>POST /v1/transit/sign/namespace-signing-key
     activate VAULT
-    Note over VAULT: AES-256-GCM encrypt<br/>HSM-backed
-    VAULT-->>VALIDATOR: {ciphertext: "vault:v1:...", key_version}
+    VAULT-->>ADMIN: Signed topology transaction
     deactivate VAULT
-    Note over VALIDATOR: Sends encrypted envelope<br/>to Canton Sequencer
 
-    Note over VALIDATOR: Inbound: Decrypting a<br/>received transaction view
+    ADMIN->>AAPI: 2. Submit signed topology txn
+    activate AAPI
+    AAPI->>VALIDATOR: Apply topology change
+    VALIDATOR-->>AAPI: Topology updated
+    AAPI-->>ADMIN: 3. Confirmation
+    deactivate AAPI
 
-    VALIDATOR->>VAULT: POST /v1/transit/decrypt/view-encryption-key<br/>{ciphertext: "vault:v1:..."}
-    activate VAULT
-    Note over VAULT: AES-256-GCM decrypt<br/>HSM-backed · Audit logged
-    VAULT-->>VALIDATOR: {plaintext: base64(view_payload)}
-    deactivate VAULT
-    Note over VALIDATOR: Daml Engine processes<br/>decrypted view
+    Note over ADMIN,VALIDATOR: No Vault access needed by validator.<br/>Topology txn was pre-signed.
 ```
 
 ---
 
-## 6. Key Lifecycle Management
+## 7. Key Rotation (Re-Provisioning)
+
+Key rotation is the only time the one-time provisioning boundary is crossed again — and only for the encryption/node keys held by the validator. Signing keys rotate inside Vault without any interaction with Blockdaemon beyond a topology announcement.
 
 ```mermaid
-stateDiagram-v2
-    direction LR
+graph LR
+    subgraph SIGNING_ROTATION["Signing Key Rotation (Vault-Only)"]
+        direction TB
+        S1["1. Vault generates<br/>new key version"]
+        S2["2. Sign topology txn<br/>announcing new public key"]
+        S3["3. Submit via Admin API"]
+        S4["4. Old version kept<br/>for verification only"]
+        S1 --> S2 --> S3 --> S4
+    end
 
-    [*] --> Generated: Vault generates<br/>key in HSM
+    subgraph ENCRYPTION_ROTATION["Encryption Key Rotation (Re-Provision)"]
+        direction TB
+        E1["1. Vault generates<br/>new encryption key"]
+        E2["2. Export wrapped key<br/>(secure ceremony)"]
+        E3["3. Provision to validator<br/>via Admin API"]
+        E4["4. Validator re-wraps<br/>existing data"]
+        E5["5. Old key kept for<br/>decryption of historical data"]
+        E1 --> E2 --> E3 --> E4 --> E5
+    end
 
-    Generated --> Active: Topology txn<br/>registers public key<br/>on Canton
-
-    Active --> Rotating: Rotation triggered<br/>(policy or manual)
-
-    Rotating --> Active: New key version active<br/>Old version: decrypt-only
-
-    Active --> Revoked: Compromise detected<br/>or decommission
-
-    Revoked --> [*]: Key destroyed<br/>after retention period
-
-    note right of Active
-        • Signs/encrypts new operations
-        • Vault key version = latest
-        • Canton topology reflects current key
-    end note
-
-    note right of Rotating
-        • New key version generated
-        • Old version kept for decrypt
-        • Topology txn announces rotation
-        • Grace period for propagation
-    end note
-
-    note right of Revoked
-        • Emergency topology txn
-        • All operations halt
-        • Incident response triggered
-    end note
+    style SIGNING_ROTATION fill:#ecfdf5,stroke:#059669,stroke-width:2px
+    style ENCRYPTION_ROTATION fill:#eff6ff,stroke:#2563eb,stroke-width:2px
+    style S1 fill:#059669,stroke:#333,color:#fff
+    style S2 fill:#059669,stroke:#333,color:#fff
+    style S3 fill:#059669,stroke:#333,color:#fff
+    style S4 fill:#059669,stroke:#333,color:#fff
+    style E1 fill:#2563eb,stroke:#333,color:#fff
+    style E2 fill:#2563eb,stroke:#333,color:#fff
+    style E3 fill:#2563eb,stroke:#333,color:#fff
+    style E4 fill:#2563eb,stroke:#333,color:#fff
+    style E5 fill:#2563eb,stroke:#333,color:#fff
 ```
 
 ### Rotation Policy
 
-| Key | Rotation Frequency | Method | Canton Impact |
+| Key | Rotation | Method | Crosses Boundary? |
 |---|---|---|---|
-| Root Namespace Key | Never (unless compromised) | Manual Shamir ceremony | Full re-onboarding required |
-| Namespace Signing Key | 90 days | Vault auto-rotate + topology txn | Announced; grace period applies |
-| Transaction Signing Key | 30 days | Vault auto-rotate + topology txn | Seamless; old version kept for verification |
-| Authentication Key (mTLS) | 24 hours | Vault PKI auto-issue | Transparent; short-lived certs |
-| View Encryption Key | 90 days | Vault auto-rotate | Old version kept for decryption of historical views |
-| Storage Encryption Key | 180 days | Vault auto-rotate + re-wrap | Online re-encryption of PCS data |
+| **Root Namespace Key** | Never (unless compromised) | Manual Shamir ceremony | No |
+| **Namespace Signing Key** | 90 days | Vault auto-rotate → topology txn via Admin API | No (only public key announced) |
+| **Transaction Signing Key** | 30 days | Vault auto-rotate → topology txn via Admin API | No (only public key announced) |
+| **View Encryption Key** | 90 days | Vault generate → secure export → re-provision via Admin API | Yes (re-provisioning) |
+| **Storage Encryption Key** | 180 days | Vault generate → secure export → re-provision via Admin API | Yes (re-provisioning) |
+| **Node Identity Key** | Annual | Vault PKI → re-provision via Admin API | Yes (re-provisioning) |
 
 ---
 
-## 7. What Canton (Blockdaemon) Holds vs. What Vault Holds
+## 8. What Each Side Holds at Runtime
 
 ```mermaid
 graph TB
-    subgraph CANTON_HOLDS["What Canton / Blockdaemon Holds"]
+    subgraph VAULT_HOLDS["🔐 What Vault Holds (Bank)"]
         direction TB
-        C1["Public keys<br/>(registered via topology txns)"]
-        C2["KMS endpoint reference<br/>(Vault URL + auth token path)"]
-        C3["Key aliases / references<br/>(e.g. 'txn-signing-key')"]
-        C4["Encrypted contract data<br/>(PCS ciphertext)"]
-        C5["Encrypted envelopes<br/>(Canton protocol)"]
+        V1["Root Namespace Private Key<br/>(air-gapped HSM — never used at runtime)"]
+        V2["Namespace Signing Key<br/>(signs topology txns)"]
+        V3["Transaction Signing Key<br/>(signs Daml commands)"]
+        V4["Key version history<br/>(old signing key versions for verification)"]
+        V5["Complete audit trail<br/>(every sign operation)"]
     end
 
-    subgraph VAULT_HOLDS["What Vault Holds"]
+    subgraph BD_HOLDS["☁️ What Validator Holds (Blockdaemon)"]
         direction TB
-        V1["Root Namespace Private Key<br/>(air-gapped HSM)"]
-        V2["All signing private keys<br/>(Transit engine, HSM-backed)"]
-        V3["All encryption keys<br/>(Transit engine, HSM-backed)"]
-        V4["TLS CA + client certs<br/>(PKI engine)"]
-        V5["Key version history<br/>(for decrypt of old data)"]
-        V6["Complete audit trail<br/>(every operation logged)"]
+        B1["View Encryption Key<br/>(provisioned copy — encrypts/decrypts views)"]
+        B2["Storage Encryption Key<br/>(provisioned copy — encrypts PCS at rest)"]
+        B3["Node Identity Key + TLS cert<br/>(provisioned — Canton protocol mTLS)"]
+        B4["Public keys of all parties<br/>(registered via topology txns)"]
+        B5["Encrypted contract data<br/>(PCS — encrypted with storage key)"]
     end
 
-    C2 -.->|"API calls<br/>(sign/encrypt/decrypt)"| V2
-    C2 -.->|"API calls"| V3
+    subgraph COMMS["🔗 Runtime Communication Channels"]
+        direction LR
+        LAPI["<b>Ledger API</b><br/>gRPC/TLS :6865"]
+        AAPI["<b>Admin API</b><br/>gRPC/TLS"]
+    end
 
-    style CANTON_HOLDS fill:#fff7ed,stroke:#ea580c,stroke-width:2px
-    style VAULT_HOLDS fill:#fef2f2,stroke:#dc2626,stroke-width:2px
+    V3 -.->|"Signing Module<br/>signs commands"| LAPI
+    V2 -.->|"Admin tools<br/>sign topology txns"| AAPI
+    LAPI -.-> B1
+    AAPI -.-> B4
+
+    style VAULT_HOLDS fill:#fef2f2,stroke:#dc2626,stroke-width:3px
+    style BD_HOLDS fill:#fff7ed,stroke:#ea580c,stroke-width:3px
+    style COMMS fill:#ecfdf5,stroke:#059669,stroke-width:3px
     style V1 fill:#dc2626,stroke:#333,color:#fff
     style V2 fill:#dc2626,stroke:#333,color:#fff
     style V3 fill:#dc2626,stroke:#333,color:#fff
-    style C1 fill:#ea580c,stroke:#333,color:#fff
-    style C2 fill:#ea580c,stroke:#333,color:#fff
+    style B1 fill:#ea580c,stroke:#333,color:#fff
+    style B2 fill:#ea580c,stroke:#333,color:#fff
+    style B3 fill:#ea580c,stroke:#333,color:#fff
+    style LAPI fill:#059669,stroke:#333,color:#fff
+    style AAPI fill:#059669,stroke:#333,color:#fff
 ```
 
 ---
 
-## 8. End-to-End: Mint Token with External Signing
+## 9. End-to-End: Mint Token
 
-Bringing it all together — a concrete example of minting a deposit token using the Vault-Blockdaemon architecture.
+Complete flow showing how the segregated model works in practice.
 
 ```mermaid
 sequenceDiagram
@@ -315,61 +394,58 @@ sequenceDiagram
     participant SIGNER as Signing Module
     participant VAULT as HashiCorp Vault
     participant LAPI as Ledger API<br/>(Blockdaemon)
+    participant VALIDATOR as Canton Validator
     participant CANTON as Canton Network
 
-    CB->>IL: 1. POST /entries {debit DDA, credit DEPO suspense}
+    CB->>IL: POST /entries {debit DDA, credit DEPO suspense}
     IL-->>CB: txn_ref = TXN-20260305-001
-    IL->>ORCH: 2. MintRequested event (Kafka)
+    IL->>ORCH: MintRequested event (Kafka)
 
-    ORCH->>LAPI: 3. PrepareSubmission(CreateCommand: DepositToken)
-    LAPI-->>ORCH: PreparedSubmission {txn_hash}
+    ORCH->>SIGNER: Build CreateCommand: DepositToken
 
-    ORCH->>SIGNER: 4. Sign(txn_hash)
-    SIGNER->>VAULT: POST /v1/transit/sign/txn-signing-key
-    VAULT-->>SIGNER: {signature}
-    SIGNER-->>ORCH: SignedPayload
+    rect rgb(236, 253, 245)
+        Note over SIGNER,LAPI: Ledger API — the ONLY channel
+        SIGNER->>LAPI: PrepareSubmission(CreateCommand)
+        LAPI-->>SIGNER: {txn_hash, serialized_txn}
+    end
 
-    ORCH->>LAPI: 5. ExecuteSubmission(signed_payload)
-    LAPI->>CANTON: 6. Canton Confirmation Protocol
-    CANTON-->>LAPI: 7. Verdict: APPROVE
-    LAPI-->>ORCH: 8. Completion {contract_id, offset}
+    rect rgb(254, 242, 242)
+        Note over SIGNER,VAULT: Vault — internal signing, no external calls
+        SIGNER->>VAULT: transit/sign/txn-signing-key {txn_hash}
+        VAULT-->>SIGNER: {signature}
+    end
 
-    ORCH->>IL: 9. POST /confirm {txn_ref, contract_id, offset}
-    IL-->>CB: 10. Token minted — suspense cleared
+    rect rgb(236, 253, 245)
+        Note over SIGNER,LAPI: Ledger API — submit signed payload
+        SIGNER->>LAPI: ExecuteSubmission(serialized_txn, signature)
+    end
 
-    Note over VAULT: Audit log records:<br/>key=txn-signing-key<br/>op=sign<br/>caller=orchestrator-svc<br/>time=2026-03-05T10:30:00Z
+    Note over VALIDATOR: Validator encrypts views<br/>locally with provisioned<br/>encryption key
+
+    VALIDATOR->>CANTON: Encrypted envelopes
+    CANTON-->>VALIDATOR: Verdict: APPROVE
+    LAPI-->>SIGNER: Completion {contract_id, offset}
+
+    SIGNER-->>ORCH: Success
+    ORCH->>IL: POST /confirm {txn_ref, contract_id}
+    IL-->>CB: Token minted — suspense cleared
+
+    Note over VAULT,VALIDATOR: Vault and Validator never<br/>communicate directly.
 ```
 
 ---
 
-## 9. Network Connectivity
+## 10. Communication Matrix
 
-```mermaid
-graph LR
-    subgraph BANK_NET["Bank Network (Private)"]
-        VAULT_N["Vault Cluster<br/>10.x.x.x"]
-        SIGNER_N["Signing Module<br/>10.x.x.x"]
-        ORCH_N["Orchestrator<br/>10.x.x.x"]
-    end
+Summary of all runtime connections in the segregated model.
 
-    subgraph DMZ["DMZ / API Gateway"]
-        GW["mTLS Gateway<br/>IP Allowlisted"]
-    end
+| From | To | Channel | Purpose | Frequency |
+|---|---|---|---|---|
+| Signing Module | Ledger API (BD) | gRPC/TLS | Submit commands, receive completions | Every transaction |
+| Bank Admin | Admin API (BD) | gRPC/TLS | Topology txns, node config, key rotation announcements | Infrequent |
+| Signing Module | Vault | HTTPS (internal) | Sign txn hashes | Every transaction |
+| Bank Admin | Vault | HTTPS (internal) | Sign topology txns, generate keys | Infrequent |
+| Validator | Canton Sequencer | Canton Protocol (gRPC) | Encrypted envelopes, consensus | Every transaction |
+| **Validator** | **Vault** | **None** | **No runtime connectivity** | **Never** |
 
-    subgraph BD_NET["Blockdaemon (Cloud)"]
-        LAPI_N["Ledger API<br/>ledger.bd.example.com:6865"]
-        VAL_N["Validator Node"]
-    end
-
-    ORCH_N -->|"gRPC/mTLS"| GW
-    GW -->|"gRPC/mTLS"| LAPI_N
-    VAL_N -->|"HTTPS/mTLS<br/>(KMS API calls)"| GW
-    GW -->|"HTTPS/mTLS"| VAULT_N
-
-    style BANK_NET fill:#ecfdf5,stroke:#059669,stroke-width:2px
-    style BD_NET fill:#fff7ed,stroke:#ea580c,stroke-width:2px
-    style DMZ fill:#fefce8,stroke:#ca8a04,stroke-width:2px
-    style GW fill:#ca8a04,stroke:#333,color:#fff
-```
-
-All traffic flows through an mTLS-terminating API gateway in the DMZ. The Vault cluster is never directly exposed to the internet. Blockdaemon's validator reaches Vault only through the gateway, and only for specific Transit API paths (`/v1/transit/sign/*`, `/v1/transit/encrypt/*`, `/v1/transit/decrypt/*`).
+The last row is the defining characteristic of this architecture: **after provisioning, the validator operates autonomously with its provisioned keys and never calls back to Vault**.

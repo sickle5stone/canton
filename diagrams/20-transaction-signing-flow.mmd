@@ -3,39 +3,36 @@ sequenceDiagram
     participant ORCH as Token Orchestrator
     participant SIGNER as Signing Module
     participant VAULT as HashiCorp Vault
-    participant LAPI as Ledger API<br/>(Blockdaemon)
-    participant VALIDATOR as Canton Validator<br/>(Blockdaemon)
-    participant CANTON as Canton Network<br/>(Sequencer + Mediator)
+    participant LAPI as Ledger API (Blockdaemon)
+    participant CANTON as Canton Network
 
-    Note over ORCH: Domain event received<br/>(e.g. MintRequested)
+    Note over ORCH: Domain event received (e.g. MintRequested via Kafka)
 
-    ORCH->>LAPI: 1. PrepareSubmission(DamlCommand)
+    ORCH->>SIGNER: Build Daml command (CreateCommand: DepositToken)
+
+    SIGNER->>LAPI: 1. PrepareSubmission(command)
     activate LAPI
-    LAPI->>VALIDATOR: Parse & validate command
-    VALIDATOR-->>LAPI: Unsigned transaction envelope
-    LAPI-->>ORCH: PreparedSubmission {txn_hash, serialized_txn}
+    LAPI-->>SIGNER: Transaction to sign {txn_hash, serialized_txn}
     deactivate LAPI
 
-    ORCH->>SIGNER: 2. Sign(txn_hash, key_ref="txn-signing-key")
-    activate SIGNER
-    SIGNER->>VAULT: POST /v1/transit/sign/txn-signing-key
+    SIGNER->>VAULT: 2. POST /v1/transit/sign/txn-signing-key {hash}
     activate VAULT
-    Note over VAULT: ECDSA P-256 sign<br/>HSM-backed operation<br/>Audit log written
+    Note over VAULT: ECDSA P-256 sign / HSM-backed / Audit logged / Key never leaves Vault
     VAULT-->>SIGNER: {signature, key_version}
     deactivate VAULT
-    SIGNER-->>ORCH: SignedPayload {signature, key_version, algorithm}
-    deactivate SIGNER
 
-    ORCH->>LAPI: 3. ExecuteSubmission(serialized_txn, signature)
+    SIGNER->>LAPI: 3. Submit signed payload {serialized_txn, signature}
     activate LAPI
-    LAPI->>VALIDATOR: Submit signed transaction
-    VALIDATOR->>CANTON: Encrypted envelopes via Sequencer
+    Note over LAPI: Validator encrypts locally with provisioned encryption keys
+    LAPI->>CANTON: Encrypted envelopes (Sequencer)
     activate CANTON
-    Note over CANTON: Confirmation Protocol<br/>Mediator collects responses<br/>Issues verdict
-    CANTON-->>VALIDATOR: Verdict (approve/reject)
+    Note over CANTON: Confirmation Protocol / Mediator verdict
+    CANTON-->>LAPI: Verdict (approve/reject)
     deactivate CANTON
-    VALIDATOR-->>LAPI: Completion event
-    LAPI-->>ORCH: 4. CompletionResponse {status, offset}
+    LAPI-->>SIGNER: 4. CompletionResponse {status, contract_id, offset}
     deactivate LAPI
 
-    Note over ORCH: Update Internal Ledger<br/>with on-chain confirmation
+    SIGNER-->>ORCH: Result {contract_id, status}
+    Note over ORCH: Update Internal Ledger
+
+    Note over VAULT,LAPI: No direct connection between Vault and Blockdaemon. Signing Module bridges the gap.

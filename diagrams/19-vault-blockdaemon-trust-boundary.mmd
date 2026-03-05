@@ -1,42 +1,45 @@
-graph LR
-    subgraph BANK["🔒 Bank Trust Boundary"]
+graph TB
+    subgraph BANK["Bank Trust Boundary"]
         direction TB
-        VAULT_SVC["<b>HashiCorp Vault</b><br/>Transit + PKI Engines<br/>FIPS 140-2 Level 3 HSM Backend"]
-        SIGNER["<b>Signing Module</b><br/>Stateless Microservice<br/>Constructs & Signs Payloads"]
-        ORCH["<b>Token Orchestrator</b><br/>Command Builder<br/>Event Consumer"]
-        AUDIT["<b>Audit Log</b><br/>Every sign/decrypt op<br/>Tamper-evident"]
+        VAULT_SVC["HashiCorp Vault\nRoot Key + Signing Keys\nFIPS 140-2 Level 3 HSM"]
+        SIGNER["Signing Module\nRetrieves unsigned txns\nSigns via Vault\nSubmits signed payloads"]
+        ORCH["Token Orchestrator\nBusiness logic\nEvent consumer"]
+        AUDIT["Audit Log\nEvery sign operation\nTamper-evident"]
 
         ORCH --> SIGNER
-        SIGNER -->|"vault transit/sign"| VAULT_SVC
+        SIGNER -->|"transit/sign"| VAULT_SVC
         VAULT_SVC --> AUDIT
     end
 
-    subgraph BD["☁️ Blockdaemon Trust Boundary"]
+    subgraph BD["Blockdaemon Trust Boundary"]
         direction TB
-        LAPI["<b>Ledger API</b><br/>gRPC/TLS<br/>Command & Transaction Services"]
-        VALIDATOR["<b>Canton Validator Node</b><br/>JVM/Scala · K8s<br/>Daml Engine · PCS · ACJ"]
-        PG["<b>PostgreSQL</b><br/>Encrypted at rest<br/>(bank-held keys)"]
+        LAPI["Ledger API\ngRPC/TLS :6865\nCommand + Transaction Services"]
+        AAPI["Admin API\ngRPC/TLS\nTopology + Node Mgmt"]
+        VALIDATOR["Canton Validator\nProvisioned encryption keys\nProvisioned node identity\nJVM/Scala - K8s"]
+        PG["PostgreSQL\nEncrypted at rest\n(provisioned storage key)"]
 
         LAPI --- VALIDATOR
+        AAPI --- VALIDATOR
         VALIDATOR --- PG
     end
 
-    subgraph CANTON["🔗 Canton Network"]
+    subgraph CANTON["Canton Network"]
         direction TB
-        SEQ["<b>Sequencer</b><br/>Total-Order Multicast"]
-        MED["<b>Mediator</b><br/>Confirmation Protocol"]
+        SEQ["Sequencer"]
+        MED["Mediator"]
+        SEQ <--> MED
     end
 
-    SIGNER -->|"signed command<br/>(gRPC/mTLS)"| LAPI
-    LAPI -->|"unsigned txn<br/>(PrepareSubmission)"| SIGNER
-    VALIDATOR -->|"KMS API call<br/>(encrypt/decrypt)"| VAULT_SVC
-    VALIDATOR -->|"encrypted envelopes"| SEQ
-    SEQ <--> MED
+    SIGNER <-->|"Ledger API\nretrieve unsigned txn\nsubmit signed txn"| LAPI
+    SIGNER <-->|"Admin API\ntopology txns\n(signed with NSK)"| AAPI
+    VALIDATOR <-->|"Canton Protocol\n(encrypted envelopes)"| SEQ
 
     style BANK fill:#ecfdf5,stroke:#059669,stroke-width:3px
     style BD fill:#fff7ed,stroke:#ea580c,stroke-width:3px
     style CANTON fill:#eff6ff,stroke:#2563eb,stroke-width:3px
     style VAULT_SVC fill:#dc2626,stroke:#333,color:#fff
     style SIGNER fill:#7c3aed,stroke:#333,color:#fff
+    style LAPI fill:#059669,stroke:#333,color:#fff
+    style AAPI fill:#059669,stroke:#333,color:#fff
     style SEQ fill:#2563eb,stroke:#333,color:#fff
     style MED fill:#ea580c,stroke:#333,color:#fff

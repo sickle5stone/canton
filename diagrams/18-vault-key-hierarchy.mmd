@@ -1,32 +1,34 @@
 graph TD
-    subgraph VAULT["🔐 HashiCorp Vault (Bank-Operated)"]
+    subgraph VAULT["HashiCorp Vault (Bank-Operated)"]
         direction TB
-        ROOT["<b>Root Namespace Key</b><br/>Ed25519 / RSA-4096<br/>Cold Storage · Air-Gapped HSM<br/>Used ONCE: bootstrap Canton identity"]
+        ROOT["Root Namespace Key\nEd25519 / RSA-4096\nCold Storage - Air-Gapped HSM\nUsed ONCE: bootstrap Canton identity"]
 
-        subgraph SIGNING["Transit Secrets Engine — Signing Keys"]
+        subgraph BANK_KEYS["Keys Retained in Vault (Never Leave)"]
             direction LR
-            NSK["<b>Namespace Signing Key</b><br/>ECDSA P-256<br/>Signs topology txns<br/>(party registration,<br/>key rotation)"]
-            TSK["<b>Transaction Signing Key</b><br/>ECDSA P-256<br/>Signs Daml commands<br/>(mint, transfer, redeem)"]
-            ASK["<b>Authentication Key</b><br/>ECDSA P-256<br/>mTLS client cert<br/>for Ledger API"]
+            NSK["Namespace Signing Key\nECDSA P-256\nSigns topology txns via Admin API"]
+            TSK["Transaction Signing Key\nECDSA P-256\nSigns Daml commands"]
         end
 
-        subgraph ENCRYPTION["Transit Secrets Engine — Encryption Keys"]
+        subgraph PROVISIONED["Keys Generated in Vault, Provisioned Once to Validator"]
             direction LR
-            VEK["<b>View Encryption Key</b><br/>AES-256-GCM / HPKE<br/>Encrypts transaction<br/>view payloads"]
-            SEK["<b>Storage Encryption Key</b><br/>AES-256-GCM<br/>Encrypts PCS data<br/>at rest"]
+            VEK["View Encryption Key\nAES-256-GCM / HPKE\nEncrypts transaction views"]
+            SEK["Storage Encryption Key\nAES-256-GCM\nEncrypts PCS data at rest"]
+            NODEK["Node Identity Key\nTLS cert for Canton protocol"]
         end
 
         ROOT -->|"delegates authority"| NSK
         ROOT -->|"delegates authority"| TSK
-        ROOT -->|"delegates authority"| ASK
-        ROOT -->|"delegates authority"| VEK
-        ROOT -->|"delegates authority"| SEK
+        ROOT -->|"generates & exports"| VEK
+        ROOT -->|"generates & exports"| SEK
+        ROOT -->|"generates & exports"| NODEK
     end
 
     style VAULT fill:#f7f3ff,stroke:#7c3aed,stroke-width:3px
     style ROOT fill:#dc2626,stroke:#333,color:#fff
-    style NSK fill:#ea580c,stroke:#333,color:#fff
-    style TSK fill:#ea580c,stroke:#333,color:#fff
-    style ASK fill:#ea580c,stroke:#333,color:#fff
+    style BANK_KEYS fill:#fef2f2,stroke:#dc2626,stroke-width:2px
+    style PROVISIONED fill:#eff6ff,stroke:#2563eb,stroke-width:2px
+    style NSK fill:#dc2626,stroke:#333,color:#fff
+    style TSK fill:#dc2626,stroke:#333,color:#fff
     style VEK fill:#2563eb,stroke:#333,color:#fff
     style SEK fill:#2563eb,stroke:#333,color:#fff
+    style NODEK fill:#2563eb,stroke:#333,color:#fff

@@ -1,33 +1,31 @@
-stateDiagram-v2
-    direction LR
+graph LR
+    subgraph SIGNING_ROTATION["Signing Key Rotation (Vault-Only)"]
+        direction TB
+        S1["1. Vault generates new key version"]
+        S2["2. Sign topology txn announcing new public key"]
+        S3["3. Submit via Admin API"]
+        S4["4. Old version kept for verification only"]
+        S1 --> S2 --> S3 --> S4
+    end
 
-    [*] --> Generated: Vault generates<br/>key in HSM
+    subgraph ENCRYPTION_ROTATION["Encryption Key Rotation (Re-Provision)"]
+        direction TB
+        E1["1. Vault generates new encryption key"]
+        E2["2. Export wrapped key (secure ceremony)"]
+        E3["3. Provision to validator via Admin API"]
+        E4["4. Validator re-wraps existing data"]
+        E5["5. Old key kept for decryption of historical data"]
+        E1 --> E2 --> E3 --> E4 --> E5
+    end
 
-    Generated --> Active: Topology txn<br/>registers public key<br/>on Canton
-
-    Active --> Rotating: Rotation triggered<br/>(policy or manual)
-
-    Rotating --> Active: New key version active<br/>Old version: decrypt-only
-
-    Active --> Revoked: Compromise detected<br/>or decommission
-
-    Revoked --> [*]: Key destroyed<br/>after retention period
-
-    note right of Active
-        • Signs/encrypts new operations
-        • Vault key version = latest
-        • Canton topology reflects current key
-    end note
-
-    note right of Rotating
-        • New key version generated
-        • Old version kept for decrypt
-        • Topology txn announces rotation
-        • Grace period for propagation
-    end note
-
-    note right of Revoked
-        • Emergency topology txn
-        • All operations halt
-        • Incident response triggered
-    end note
+    style SIGNING_ROTATION fill:#ecfdf5,stroke:#059669,stroke-width:2px
+    style ENCRYPTION_ROTATION fill:#eff6ff,stroke:#2563eb,stroke-width:2px
+    style S1 fill:#059669,stroke:#333,color:#fff
+    style S2 fill:#059669,stroke:#333,color:#fff
+    style S3 fill:#059669,stroke:#333,color:#fff
+    style S4 fill:#059669,stroke:#333,color:#fff
+    style E1 fill:#2563eb,stroke:#333,color:#fff
+    style E2 fill:#2563eb,stroke:#333,color:#fff
+    style E3 fill:#2563eb,stroke:#333,color:#fff
+    style E4 fill:#2563eb,stroke:#333,color:#fff
+    style E5 fill:#2563eb,stroke:#333,color:#fff

@@ -1,25 +1,41 @@
-graph LR
-    subgraph BANK_NET["Bank Network (Private)"]
-        VAULT_N["Vault Cluster<br/>10.x.x.x"]
-        SIGNER_N["Signing Module<br/>10.x.x.x"]
-        ORCH_N["Orchestrator<br/>10.x.x.x"]
+graph TB
+    subgraph VAULT_HOLDS["What Vault Holds (Bank)"]
+        direction TB
+        V1["Root Namespace Private Key (air-gapped HSM)"]
+        V2["Namespace Signing Key (signs topology txns)"]
+        V3["Transaction Signing Key (signs Daml commands)"]
+        V4["Key version history (old versions for verification)"]
+        V5["Complete audit trail (every sign operation)"]
     end
 
-    subgraph DMZ["DMZ / API Gateway"]
-        GW["mTLS Gateway<br/>IP Allowlisted"]
+    subgraph BD_HOLDS["What Validator Holds (Blockdaemon)"]
+        direction TB
+        B1["View Encryption Key (provisioned copy)"]
+        B2["Storage Encryption Key (provisioned copy)"]
+        B3["Node Identity Key + TLS cert (provisioned)"]
+        B4["Public keys of all parties (via topology txns)"]
+        B5["Encrypted contract data (PCS)"]
     end
 
-    subgraph BD_NET["Blockdaemon (Cloud)"]
-        LAPI_N["Ledger API<br/>ledger.bd.example.com:6865"]
-        VAL_N["Validator Node"]
+    subgraph COMMS["Runtime Communication Channels"]
+        direction LR
+        LAPI["Ledger API gRPC/TLS :6865"]
+        AAPI["Admin API gRPC/TLS"]
     end
 
-    ORCH_N -->|"gRPC/mTLS"| GW
-    GW -->|"gRPC/mTLS"| LAPI_N
-    VAL_N -->|"HTTPS/mTLS<br/>(KMS API calls)"| GW
-    GW -->|"HTTPS/mTLS"| VAULT_N
+    V3 -.->|"Signing Module signs commands"| LAPI
+    V2 -.->|"Admin tools sign topology txns"| AAPI
+    LAPI -.-> B1
+    AAPI -.-> B4
 
-    style BANK_NET fill:#ecfdf5,stroke:#059669,stroke-width:2px
-    style BD_NET fill:#fff7ed,stroke:#ea580c,stroke-width:2px
-    style DMZ fill:#fefce8,stroke:#ca8a04,stroke-width:2px
-    style GW fill:#ca8a04,stroke:#333,color:#fff
+    style VAULT_HOLDS fill:#fef2f2,stroke:#dc2626,stroke-width:3px
+    style BD_HOLDS fill:#fff7ed,stroke:#ea580c,stroke-width:3px
+    style COMMS fill:#ecfdf5,stroke:#059669,stroke-width:3px
+    style V1 fill:#dc2626,stroke:#333,color:#fff
+    style V2 fill:#dc2626,stroke:#333,color:#fff
+    style V3 fill:#dc2626,stroke:#333,color:#fff
+    style B1 fill:#ea580c,stroke:#333,color:#fff
+    style B2 fill:#ea580c,stroke:#333,color:#fff
+    style B3 fill:#ea580c,stroke:#333,color:#fff
+    style LAPI fill:#059669,stroke:#333,color:#fff
+    style AAPI fill:#059669,stroke:#333,color:#fff
