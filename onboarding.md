@@ -7,6 +7,33 @@ sequenceDiagram
     participant Node as Blockdaemon Node (Canton)
     participant Sync as Synchronizer
 
+    Note over Vault,Sync: PHASE 0A: Participant Identity Bootstrap
+
+    App->>Node: GET /v2/status
+    Node-->>App: {participantId: "PAR::jpmd-bank::1220a7f3...",<br/>connected: true, active: true}
+
+    App->>Node: POST /v2/topology/namespace-delegations/list<br/>{filterNamespace: "1220a7f3..."}
+    Node-->>App: {results: [{serial: 1,<br/>namespace: "1220a7f3...",<br/>targetKey: "1220a7f3...",<br/>isRootDelegation: true}]}
+
+    Note over App: Verify: root NamespaceDelegation exists<br/>(self-signed cert binding namespace to root key)
+
+    Note over Vault,Sync: PHASE 0B: Register Node Keys (OwnerToKeyMapping)
+
+    App->>Node: POST /v2/topology/owner-to-key-mappings/list<br/>{filterParticipant: "PAR::jpmd-bank::1220a7f3..."}
+    Node-->>App: {results: [{owner: "PAR::jpmd-bank::1220a7f3...",<br/>keys: [{purpose: SIGNING, id: "1220b3c4..."},<br/>{purpose: ENCRYPTION, id: "1220d8e9..."}]}]}
+
+    Note over App: Verify: OwnerToKeyMapping declares both<br/>SIGNING and ENCRYPTION keys for the participant.<br/>If missing → node is not operational.
+
+    Note over Vault,Sync: PHASE 0C: Synchronizer Connection & Trust Certificate
+
+    App->>Node: POST /v2/synchronizers/list-connected
+    Node-->>App: {results: [{synchronizerId: "global::1220glob...",<br/>healthy: true, permission: SUBMISSION}]}
+
+    App->>Node: POST /v2/topology/synchronizer-trust-certificates/list<br/>{filterParticipant: "PAR::jpmd-bank::1220a7f3...",<br/>filterSynchronizer: "global::1220glob..."}
+    Node-->>App: {results: [{participant: "PAR::jpmd-bank::1220a7f3...",<br/>synchronizer: "global::1220glob...", serial: 1}]}
+
+    Note over App: Verify: SynchronizerTrustCertificate exists<br/>(participant has declared membership on synchronizer).<br/>Synchronizer operator must have approved this participant.
+
     Note over Vault,Sync: PHASE 1: Generate Party Key
 
     App->>Vault: Create Transit key<br/>name=canton-bank-treasury, type=ecdsa-p256, exportable=false
