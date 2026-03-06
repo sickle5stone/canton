@@ -1,6 +1,6 @@
 # Mint Sequence Flows — Vault Signing + Blockdaemon Interactive Submission
 
-## Canton Network | Deposit Token (DEPO)
+## Canton Network | `deposit_token` Instrument on Registry Utility
 
 **Version 1.0 | March 2026 | CONFIDENTIAL — Internal Use Only**
 
@@ -40,7 +40,7 @@ sequenceDiagram
 
     Note over Client,MED: PHASE 1 — Off-Chain Settlement
 
-    Client->>ITS: Mint Request (5M DEPO for Acme)
+    Client->>ITS: Mint Request (5M deposit_token for Acme)
     ITS->>ITS: Validate DDA balance >= $5M
     ITS->>ITS: Debit DDA (Acme) $5M
     ITS->>ITS: Credit Reserve Account $5M
@@ -51,14 +51,14 @@ sequenceDiagram
 
     Note over Orch,MED: PHASE 2 — Prepare (Blockdaemon)
 
-    Orch->>Orch: Construct Daml CreateCommand<br/>template: DepositToken<br/>args: {issuer, owner, amount, tokenType: DEPO}
+    Orch->>Orch: Construct Daml CreateCommand<br/>template: Instrument (deposit_token)<br/>args: {issuer, owner, amount, registry: RegistryUtility}
     Orch->>BD: InteractiveSubmissionService.PrepareSubmission<br/>{commands: [CreateCommand], act_as: ["bank::issuer"],<br/>command_id: "CMD-MINT-20260301-A7F3E9",<br/>workflow_id: "WF-MINT-TXN-A7F3"}
     BD->>BD: Parse & validate Daml command
     BD->>BD: Execute Daml interpretation engine<br/>Compute full transaction tree
     BD->>BD: Decompose into participant views
     BD->>BD: Serialize prepared tx + SHA-256 hash
     BD->>BD: Identify signing requirements<br/>Estimate traffic cost
-    BD-->>Orch: PreparedTransaction<br/>{prepared_transaction_data: bytes,<br/>transaction_hash: 0xa3f2b1...(32 bytes),<br/>hash_algorithm: "SHA256",<br/>signature_requirements: [{party: "bank::issuer",<br/>key_fingerprints: ["fp:ab12cd..."]}],<br/>cost_estimation: {traffic_cost_bytes: 1024}}
+    BD-->>Orch: PreparedTransaction<br/>{prepared_transaction_data: bytes,<br/>transaction_hash: 0xa3f2b1...(32 bytes),<br/>hash_algorithm: "SHA256",<br/>signature_requirements: [{party: "bank::issuer",<br/>key_fingerprints: ["fp:ab12cd..."]}],<br/>cost_estimation: {traffic_cost_bytes: 1024},<br/>registry: "RegistryUtility"}
 
     Note over Orch,Vault: PHASE 3 — Sign (HashiCorp Vault)
 
@@ -92,7 +92,7 @@ sequenceDiagram
     VAL->>VAL: Validate authorization rules
     VAL->>VAL: Fetch owner Credential from ACS
     VAL->>VAL: Check: kycStatus == ACTIVE
-    VAL->>VAL: Check: DEPO in permissionedTokens
+    VAL->>VAL: Check: deposit_token in permissionedInstruments
     VAL->>VAL: Check: credential not expired
     VAL->>VAL: Check: jurisdiction not sanctioned
     VAL->>SEQ: ConfirmationResponse (LocalApprove)
@@ -105,7 +105,7 @@ sequenceDiagram
         SEQ->>VAL: Verdict: APPROVED
     end
 
-    BD->>BD: Commit DepositToken to ACS<br/>(Active Contract Set)
+    BD->>BD: Commit deposit_token instrument to ACS<br/>(Active Contract Set on Registry Utility)
     BD-->>Orch: TransactionResult<br/>{transaction_id: "tx-abc123",<br/>offset: "000000000042",<br/>effective_at: "2026-03-01T10:00:02Z",<br/>events: [CreatedEvent{contract_id: "00a3f2..."}]}
 
     Note over Orch,IL: PHASE 6 — Off-Chain Finalization
@@ -113,45 +113,64 @@ sequenceDiagram
     Orch->>IL: PUT /v1/tokens/TXN-MINT-20260301-A7F3/status<br/>{status: "MINTED", contract_id: "00a3f2...",<br/>canton_tx_id: "tx-abc123", offset: "000000000042"}
     IL->>IL: Update position: PENDING_MINT to MINTED<br/>Record on-chain contract_id + tx_id
     IL-->>ITS: Confirmation callback
-    ITS-->>Client: Mint Complete — 5M DEPO issued
+    ITS-->>Client: Mint Complete — 5M deposit_token instrument issued on Registry Utility
 ```
 
 ---
 
-## 2. Vault Signing Detail
+## 2. Detailed Internal — PrepareSubmission to Signing
 
-Expanded view of the Orchestrator-to-Vault signing interaction, showing the full request/response cycle and post-processing.
+Zoomed-in view of the Orchestrator's internal flow from constructing the Daml command, requesting a prepared transaction from Blockdaemon, through to signing via the Transit Engine (vault-as-a-service) and assembling the signature envelope for execution.
 
 ```mermaid
 sequenceDiagram
     autonumber
+    participant Kafka as Event Bus (Kafka)
     participant Orch as Token Orchestrator
-    participant Vault as HashiCorp Vault<br/>(Transit Engine)
-    participant HSM as Vault HSM Backend<br/>(FIPS 140-2 L3)
+    participant BD as Blockdaemon<br/>Validator Node
+    participant Transit as Transit Engine<br/>(Signing-as-a-Service)
 
-    Note over Orch: Received PreparedTransaction from Blockdaemon
+    Note over Kafka,Orch: Trigger
 
-    Orch->>Orch: Extract transaction_hash (32 bytes SHA-256)<br/>from PrepareSubmission response
-    Orch->>Orch: Base64-encode the hash<br/>b64_hash = base64(transaction_hash)
+    Kafka->>Orch: Consume MintRequested event<br/>{txn_ref: "TXN-MINT-20260301-A7F3",<br/>owner: "acme", amount: 5000000}
+
+    Note over Orch,Transit: STEP 1 — Onboard Signing Keys
+
+    Orch->>Transit: POST /v1/api/onboard-keys<br/>{key_name: "canton-signing-key",<br/>key_type: "ecdsa-p256",<br/>usage: "signing"}
+    Transit-->>Orch: 200 OK<br/>{key_name: "canton-signing-key",<br/>public_key: "MFkwEwYHKoZIzj0C...",<br/>key_version: 3,<br/>fingerprint: "fp:ab12cd..."}
+    Orch->>Orch: Cache key metadata<br/>Verify fingerprint matches Canton topology
+
+    Note over Orch: STEP 2 — Build Daml Command
+
+    Orch->>Orch: Resolve party identifiers from config<br/>issuer = "bank::issuer"<br/>owner = "acme_corp::ns_acme"
+    Orch->>Orch: Construct CreateCommand<br/>template: RegistryUtility.Instrument (deposit_token)<br/>args: {issuer, owner, amount: 5000000,<br/>currency: "USD", registry: "RegistryUtility"}
+    Orch->>Orch: Assign command metadata<br/>command_id: "CMD-MINT-20260301-A7F3E9"<br/>workflow_id: "WF-MINT-TXN-A7F3"<br/>dedupliation_period: 24h
+
+    Note over Orch,BD: STEP 3 — Request Prepared Transaction
+
+    Orch->>BD: InteractiveSubmissionService.PrepareSubmission<br/>{commands: [CreateCommand],<br/>act_as: ["bank::issuer"],<br/>command_id, workflow_id}
+    BD->>BD: Validate command + interpret Daml<br/>Compute transaction tree<br/>Decompose into participant views
+    BD-->>Orch: PreparedTransaction<br/>{prepared_transaction_data: bytes,<br/>transaction_hash: 0xa3f2b1...(32 bytes),<br/>hash_algorithm: "SHA256",<br/>signature_requirements: [{<br/>  party: "bank::issuer",<br/>  key_fingerprints: ["fp:ab12cd..."]}],<br/>cost_estimation: {traffic_cost_bytes: 1024}}
+
+    Orch->>Orch: Record prepare_timestamp = now()<br/>Start 30s expiry countdown
+
+    Note over Orch,Transit: STEP 4 — Sign via Transit Engine
+
+    Orch->>Orch: Extract transaction_hash (32 bytes SHA-256)<br/>Base64-encode: b64_hash = base64(0xa3f2b1...)
     Orch->>Orch: Resolve signing key name from config<br/>key_name = "canton-signing-key"
 
-    Orch->>Vault: POST /v1/transit/sign/{key_name}<br/>Headers:<br/>  X-Vault-Token: hvs.CAESI...<br/>  X-Vault-Namespace: bank/canton-prod<br/>  Content-Type: application/json<br/>Body:<br/>  input: "{b64_hash}"<br/>  hash_algorithm: "sha2-256"<br/>  prehashed: true<br/>  marshaling_algorithm: "asn1"
+    Orch->>Transit: POST /v1/transit/sign/{key_name}<br/>{input: "{b64_hash}",<br/>hash_algorithm: "sha2-256",<br/>prehashed: true,<br/>marshaling_algorithm: "asn1"}
+    Transit-->>Orch: 200 OK<br/>{data: {<br/>  signature: "vault:v1:MEUCIQDh8kF2n...",<br/>  key_version: 3}}
 
-    Vault->>Vault: Authenticate token<br/>Check transit/sign policy<br/>Resolve key version (latest or pinned)
+    Note over Orch: STEP 5 — Assemble Signature Envelope
 
-    Vault->>HSM: Forward sign operation<br/>Key: canton-signing-key (v3)<br/>Algorithm: ECDSA P-256<br/>Input: pre-hashed SHA-256 digest
-    HSM->>HSM: ECDSA P-256 sign<br/>(private key never leaves HSM boundary)
-    HSM-->>Vault: Raw ECDSA signature (r, s)
-
-    Vault->>Vault: DER-encode (ASN.1 SEQUENCE)<br/>Base64-encode result<br/>Prepend "vault:v1:" prefix
-    Vault-->>Orch: 200 OK<br/>{<br/>  "request_id": "req-a1b2c3",<br/>  "data": {<br/>    "signature": "vault:v1:MEUCIQDh8kF2n...",<br/>    "key_version": 3<br/>  }<br/>}
-
-    Orch->>Orch: Strip "vault:v1:" prefix<br/>Remaining = base64-encoded DER signature
-    Orch->>Orch: Base64-decode to raw DER bytes<br/>(ASN.1 SEQUENCE of two INTEGERs: r, s)
+    Orch->>Orch: Strip "vault:v1:" prefix<br/>Base64-decode to raw DER bytes<br/>(ASN.1 SEQUENCE of two INTEGERs: r, s)
     Orch->>Orch: Look up key fingerprint from Canton topology<br/>key_fp = "fp:ab12cd..."
-    Orch->>Orch: Construct PartySignatures envelope:<br/>{<br/>  party: "bank::issuer",<br/>  signatures: [{<br/>    signature: raw_DER_bytes,<br/>    signed_by: "fp:ab12cd...",<br/>    format: SIGNATURE_FORMAT_RAW<br/>  }]<br/>}
+    Orch->>Orch: Check elapsed time since prepare<br/>If >= 25s → must re-Prepare before Execute
 
-    Note over Orch: Ready for ExecuteSubmission
+    Orch->>Orch: Construct PartySignatures envelope:<br/>{party: "bank::issuer",<br/>signatures: [{<br/>  signature: raw_DER_bytes,<br/>  signed_by: "fp:ab12cd...",<br/>  format: SIGNATURE_FORMAT_RAW}]}
+
+    Note over Orch: Ready for ExecuteSubmission →<br/>See Section 1 Phase 4
 ```
 
 ---
@@ -262,7 +281,7 @@ sequenceDiagram
 
     alt INVALID_ARGUMENT — Malformed Daml command
         Orch->>BD: PrepareSubmission(commands)
-        BD-->>Orch: PrepareError<br/>{code: INVALID_ARGUMENT,<br/>message: "Template DepositToken field 'amount' must be > 0"}
+        BD-->>Orch: PrepareError<br/>{code: INVALID_ARGUMENT,<br/>message: "Template Instrument field 'amount' must be > 0"}
         Orch->>Orch: Error: BD-7001 INVALID_COMMAND
         Orch->>IL: PATCH status: MINT_FAILED<br/>{error: "BD-7001", detail: "invalid amount"}
         Note over Orch: No retry — payload must be fixed upstream
@@ -277,10 +296,10 @@ sequenceDiagram
 
     else PACKAGE_NOT_FOUND — Daml package not uploaded
         Orch->>BD: PrepareSubmission(commands)
-        BD-->>Orch: PrepareError<br/>{code: PACKAGE_NOT_FOUND,<br/>message: "Package DepositToken-1.0 not found"}
+        BD-->>Orch: PrepareError<br/>{code: PACKAGE_NOT_FOUND,<br/>message: "Package RegistryUtility-1.0 not found"}
         Orch->>Orch: Error: BD-7003 PACKAGE_MISSING
         Orch->>IL: PATCH status: MINT_FAILED<br/>{error: "BD-7003"}
-        Orch->>Alert: CRITICAL: Daml package not deployed<br/>Upload via PackageManagementService
+        Orch->>Alert: CRITICAL: Registry Utility Daml package not deployed<br/>Upload via PackageManagementService
         Note over Orch: No retry — package must be uploaded
 
     else gRPC UNAVAILABLE — Blockdaemon node unreachable
