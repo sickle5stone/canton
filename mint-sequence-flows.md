@@ -8,15 +8,18 @@
 
 ## Table of Contents
 
-1. [Happy Path — Full E2E Mint](#1-happy-path--full-e2e-mint)
-2. [Vault Signing Detail](#2-vault-signing-detail)
-3. [Error Flow — Vault Signing Failures](#3-error-flow--vault-signing-failures)
-4. [Error Flow — PrepareSubmission Failures](#4-error-flow--preparesubmission-failures)
-5. [Error Flow — Prepared TX Expiry](#5-error-flow--prepared-tx-expiry)
-6. [Error Flow — ExecuteSubmission Failures](#6-error-flow--executesubmission-failures)
-7. [Error Flow — Canton Protocol Rejection](#7-error-flow--canton-protocol-rejection)
-8. [Rollback & Compensation](#8-rollback--compensation)
-9. [Error Decision Matrix](#9-error-decision-matrix)
+- [Mint Sequence Flows — Vault Signing + Blockdaemon Interactive Submission](#mint-sequence-flows--vault-signing--blockdaemon-interactive-submission)
+  - [Canton Network | `deposit_token` Instrument on Registry Utility](#canton-network--deposit_token-instrument-on-registry-utility)
+  - [Table of Contents](#table-of-contents)
+  - [1. Happy Path — Full E2E Mint](#1-happy-path--full-e2e-mint)
+  - [2. Detailed Internal — PrepareSubmission to Signing](#2-detailed-internal--preparesubmission-to-signing)
+  - [3. Error Flow — Vault Signing Failures](#3-error-flow--vault-signing-failures)
+  - [4. Error Flow — PrepareSubmission Failures](#4-error-flow--preparesubmission-failures)
+  - [5. Error Flow — Prepared TX Expiry](#5-error-flow--prepared-tx-expiry)
+  - [6. Error Flow — ExecuteSubmission Failures](#6-error-flow--executesubmission-failures)
+  - [7. Error Flow — Canton Protocol Rejection](#7-error-flow--canton-protocol-rejection)
+  - [8. Rollback \& Compensation](#8-rollback--compensation)
+  - [9. Error Decision Matrix](#9-error-decision-matrix)
 
 ---
 
