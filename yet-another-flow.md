@@ -106,14 +106,14 @@ This is the onboarding step for an external counterparty like acme_corp.
 
 This is the **only** time acme_corp's key is needed during onboarding. The Credential contract serves as standing authorization for all future mints to acme_corp.
 
-# Mint Flow (Bank-Initiated via OfferMint)
+# Mint Flow (Issuer-Initiated via RequestMint + Transfer)
 
-Minting is a two-step workflow using the AllocationFactory. There are actually two paths available:
+Minting is a two-step request/accept workflow using the AllocationFactory, followed by a transfer to the end client. There are two paths available on the AllocationFactory:
 
-- **AllocationFactory_RequestMint** — controller is `mint.holder`. This is for when the holder (e.g. acme_corp) initiates their own mint request. Not our flow.
-- **AllocationFactory_OfferMint** — controller is `registrar`. This is for when the bank initiates a mint on behalf of a client. This is our flow.
+- **AllocationFactory_RequestMint** — controller is `mint.holder`. This is our flow — the Issuer sets itself as the holder and requests the mint.
+- **AllocationFactory_OfferMint** — controller is `registrar`. This is for when the registrar directly offers a mint to a holder.
 
-We use the OfferMint path because we don't expect our clients to be submitting their own mint requests.
+We use the RequestMint path because we have a separate Issuer party that initiates mints, then transfers the Holding to the end client (acme_corp).
 
 ## Step 1 — Off-Chain Settlement
 
@@ -123,94 +123,155 @@ We use the OfferMint path because we don't expect our clients to be submitting t
 4. Event Bus emits a MintRequested domain event
 5. Token Orchestrator consumes the event
 
-## Step 2 — Offer Mint (on-chain)
+## Step 2 — Request Mint (on-chain)
 
-The Registrar creates a mint offer on behalf of the client. acme_corp is not involved in this step at all.
+The Issuer requests a mint with itself as the holder. acme_corp is not involved in this step.
 
-1. Orchestrator calls the Operator Backend API to retrieve the choice context for the mint
+1. Orchestrator calls the Operator Backend API to retrieve the choice context for the mint request
    - Returns: AllocationFactory CID, InstrumentConfiguration CID, Issuer Credential CID(s), and disclosed contracts
 
-2. Orchestrator constructs an ExerciseCommand on the AllocationFactory with choice AllocationFactory_OfferMint
-   - actAs: bank_registrar (registrar is the controller of OfferMint)
-   - mint.holder set to: acme_corp (the intended recipient)
-   - Args include: expectedAdmin, mint { instrumentId, amount, holder, reference, requestedAt, executeBefore }, extraArgs with the choice context
+2. Orchestrator constructs an ExerciseCommand on the AllocationFactory with choice AllocationFactory_RequestMint
+   - actAs: bank_issuer (controller is mint.holder, and the issuer IS the holder in this step)
+   - mint.holder set to: bank_issuer (the issuer mints to itself first)
+   - Args include: expectedAdmin, mint { instrumentId, amount, holder: bank_issuer, reference, requestedAt, executeBefore }, extraArgs with the choice context
+
+3. Submit via interactive submission:
+   - PrepareSubmission → get preparedTransactionHash
+   - Vault sign with canton-issuer key
+   - ExecuteSubmissionAndWait
+
+4. Result: MintRequest contract created on-chain
+   - signatories: provider, mint.holder (= bank_issuer)
+   - observer: operator, instrumentId.admin (= bank_registrar)
+
+## Step 3 — Accept Mint (on-chain)
+
+The Registrar accepts the mint request. Controller is `mint.instrumentId.admin` (= bank_registrar).
+
+1. Orchestrator calls the Backend API to retrieve the accept choice context for the MintRequest
+   - Returns: InstrumentConfiguration CID, Issuer Credential CID(s), AppRewardConfiguration CID, and disclosed contracts
+
+2. Construct ExerciseCommand on MintRequest with choice MintRequest_Accept
+   - actAs: bank_registrar (instrumentId.admin is the controller)
+   - Args include the accept choice context (extraArgs)
 
 3. Submit via interactive submission:
    - PrepareSubmission → get preparedTransactionHash
    - Vault sign with canton-registrar key
    - ExecuteSubmissionAndWait
 
-4. Result: MintOffer contract created on-chain
-   - signatories: provider, instrumentId.admin (= registrar, bank controls both)
-   - observer: operator, mint.holder (acme_corp can see the offer)
-
-## Step 3 — Accept Mint Offer (on-chain)
-
-Now acme_corp needs to accept the offer. The MintOffer_Accept choice is controlled by `mint.holder`.
-
-1. Orchestrator calls the Backend API to retrieve the accept choice context for the MintOffer
-   - Returns: InstrumentConfiguration CID, Issuer Credential CID(s), AppRewardConfiguration CID, and disclosed contracts
-
-2. Construct ExerciseCommand on MintOffer with choice MintOffer_Accept
-   - actAs: acme_corp (holder is the controller)
-   - Args include the accept choice context (extraArgs)
-
-3. Submit via interactive submission:
-   - PrepareSubmission → get preparedTransactionHash
-   - Vault sign with acme_corp's key (bank holds this key in the bank-hosted model)
-   - ExecuteSubmissionAndWait
-
 4. Result:
-   - MintOffer contract archived (consumed)
-   - Holding contract created for acme_corp (owner = acme_corp, amount = minted amount)
+   - MintRequest contract archived (consumed)
+   - Holding contract created for bank_issuer (owner = bank_issuer, amount = minted amount)
    - ExecutedMint contract created (audit trail)
 
-* Note: In the bank-hosted key model, the bank generated and holds acme_corp's Vault key. So even though acme_corp is the controller, the bank is the one signing operationally. acme_corp the entity doesn't need to do anything.
+## Step 4 — Transfer to Client via TransferPreapproval (on-chain)
 
-## Step 4 — Off-Chain Finalization
+The Issuer now holds the minted tokens and transfers them to acme_corp. We use the TransferPreapproval path to skip the two-step TransferOffer/Accept — acme_corp preapproved transfers during onboarding, so the transfer completes in a single transaction.
 
-1. Orchestrator receives the Holding CreatedEvent from the ExecuteSubmissionAndWait response
+**Prerequisite (one-time during onboarding):** acme_corp creates a TransferPreapproval contract:
+- TransferPreapproval { operator, receiver: acme_corp, instrumentAdmin: bank_registrar, instrumentAllowances: [{ id: "DEPO" }] }
+- signatory: acme_corp (receiver), observer: operator
+- Submit via interactive submission — signed with acme_corp's key
+- This serves as standing consent for future transfers of DEPO to acme_corp
+
+**Transfer step:**
+
+1. Orchestrator exercises the transfer via the TransferPreapproval contract (it implements the TransferFactory interface)
+   - This calls TransferRule_DirectTransfer under the hood — one-shot, no receiver accept needed
+   - actAs: bank_issuer (sender) + provider + registrar
+   - Args: sender = bank_issuer, receiver = acme_corp, instrumentId, amount, inputHoldingCids
+   - Submit via interactive submission — signed with canton-issuer key + canton-registrar key
+
+2. Result:
+   - Issuer's Holding archived
+   - New Holding created for acme_corp (owner = acme_corp)
+   - Remainder Holding created for issuer if partial transfer
+
+## Step 5 — Off-Chain Finalization
+
+1. Orchestrator receives the Holding CreatedEvent for acme_corp
 2. Internal Ledger updates position from PENDING_MINT to MINTED
 3. Bank Portal notified — client sees on-chain balance
 
 # Transfer Flow
 
-Transfer moves a Holding from one party to another. The AllocationFactory_TransferInternal choice is controlled by `provider, registrar, transfer.sender` — so the sender must sign.
+We don't hold client keys. So transfers involving external parties (e.g. acme_corp → another party) are client-initiated and client-signed. We only facilitate bank-internal transfers (e.g. issuer → acme_corp via TransferPreapproval, which is already covered in the mint flow above).
 
-1. Orchestrator retrieves the transfer choice context from the Backend API
-   - Returns: InstrumentConfiguration CID, sender's Credential CID(s), and disclosed contracts
+## Client-to-Client Transfer (two-step, client-initiated)
 
-2. Construct ExerciseCommand on the AllocationFactory with the transfer choice
-   - actAs: current holder (e.g. acme_corp) + provider + registrar
-   - Args: sender, receiver, instrumentId, amount, inputHoldingCids, transfer context
+This is when acme_corp wants to transfer their Holding to another party. We don't control this — the client drives it.
 
-3. Submit via interactive submission — signed with the holder's key + canton-registrar key (all three controllers must authorize)
+1. acme_corp exercises the transfer choice on the AllocationFactory (AllocationFactory_TransferInternal)
+   - controller: provider, registrar, transfer.sender — all three must authorize
+   - actAs: acme_corp (sender) + provider + registrar
+   - Submit via interactive submission — signed with acme_corp's key + canton-registrar key
+   - Note: acme_corp needs to coordinate with us for the registrar signature, or we provide a co-signing service
 
-4. Result:
-   - A TransferOffer contract is created (signatory: provider, instrumentId.admin, sender; observer: operator, receiver)
-   - Original Holding is locked during the transfer (locked with registrar as locker)
-   - Remainder Holding created for the sender if partial transfer
+2. Result: TransferOffer contract created
+   - Original Holding locked (locker = registrar)
+   - Remainder Holding created for acme_corp if partial
 
-5. Receiver accepts the TransferOffer via TransferInstruction_Accept (controller: transfer.receiver)
-   - Submit via interactive submission — signed with receiver's key
-   - The accept exercises a TransferRule_TwoStepTransfer under the hood
-   - Result: locked Holding archived, new Holding created for the receiver
+3. Receiver accepts via TransferInstruction_Accept (controller: transfer.receiver)
+   - Submitted by the receiver — signed with receiver's key
+   - Exercises TransferRule_TwoStepTransfer under the hood
+   - Result: locked Holding archived, new Holding created for receiver
+
+## Bank-Internal Transfer (one-step, via TransferPreapproval)
+
+This is the transfer from issuer → acme_corp during the mint flow. Already covered in Mint Flow Step 4 above. Uses TransferPreapproval + TransferRule_DirectTransfer — no receiver accept needed.
 
 # Redeem (Burn) Flow
 
-Redemption burns on-chain tokens and triggers off-chain settlement back to fiat. Same two-path pattern as mint:
+Redemption burns on-chain tokens and triggers off-chain settlement back to fiat. The flow mirrors the mint pattern — instead of clients burning directly, clients transfer their Holding to a bank-owned BurnParty, which triggers off-chain fiat settlement, followed by the bank burning the tokens on-chain.
 
-- **AllocationFactory_RequestBurn** — controller is `burn.holder`. Holder-initiated burn.
-- **AllocationFactory_OfferBurn** — controller is `registrar`. Bank-initiated burn.
+Clients do **not** receive `isIssuerOf` credentials. They only need `isHolderOf` — enough to transfer tokens. The burn is entirely a bank-internal operation.
 
-## Path A — Holder-Initiated Burn (RequestBurn)
+## Step 1 — Client Initiates Redemption (off-chain)
 
-If acme_corp wants to redeem their tokens:
+1. Client initiates a "Move to Fiat" request in the Bank Portal
+2. Internal Ledger records the position as PENDING_REDEEM
+3. Event Bus emits a RedeemRequested domain event
+4. Token Orchestrator consumes the event and instructs the client to transfer
 
-1. Holder exercises AllocationFactory_RequestBurn on the AllocationFactory
-   - actAs: acme_corp (holder is controller)
-   - Args include: expectedAdmin, burn { instrumentId, amount, holder, reference, requestedAt, executeBefore }, holdingCids, extraArgs
-   - Submit via interactive submission — signed with acme_corp's key
+## Step 2 — Transfer to BurnParty (on-chain)
+
+The client transfers their Holding to the bank-owned BurnParty via TransferPreapproval (same mechanism as the mint flow's Step 4, but in reverse).
+
+**Prerequisite (one-time during onboarding):** BurnParty creates a TransferPreapproval contract:
+- TransferPreapproval { operator, receiver: bank_burner, instrumentAdmin: bank_registrar, instrumentAllowances: [{ id: "DEPO" }] }
+- signatory: bank_burner (receiver), observer: operator
+- Submit via interactive submission — signed with canton-burner key
+- This serves as standing consent for any client to transfer DEPO tokens to the BurnParty
+
+**Transfer step:**
+
+1. Orchestrator exercises the transfer via the TransferPreapproval contract
+   - actAs: acme_corp (sender) + provider + registrar
+   - Args: sender = acme_corp, receiver = bank_burner, instrumentId, amount, inputHoldingCids
+   - Submit via interactive submission — signed with acme_corp's key + canton-registrar key
+
+2. Result:
+   - acme_corp's Holding archived
+   - New Holding created for bank_burner (owner = bank_burner)
+   - Remainder Holding created for acme_corp if partial transfer
+
+## Step 3 — Off-Chain Settlement
+
+1. Orchestrator detects the Holding CreatedEvent for bank_burner
+2. Internal Ledger updates position from PENDING_REDEEM to SETTLING
+3. Core Banking credits the client's DDA and debits the Reserve Account
+4. Client receives fiat
+5. Internal Ledger updates position from SETTLING to SETTLED
+
+## Step 4 — Burn (on-chain)
+
+The bank burns the tokens now held by BurnParty. This is a bank-internal operation — no client keys needed.
+
+1. BurnParty exercises AllocationFactory_RequestBurn on the AllocationFactory
+   - actAs: bank_burner (burn.holder is controller — BurnParty is the holder)
+   - Args include: expectedAdmin, burn { instrumentId, amount, holder: bank_burner, reference, requestedAt, executeBefore }, holdingCids, extraArgs
+   - Submit via interactive submission — signed with canton-burner key
 2. Result: BurnRequest contract created + Holding is locked (locked with registrar as locker)
 
 3. Registrar exercises BurnRequest_Accept on the BurnRequest (controller: burn.instrumentId.admin)
@@ -221,47 +282,34 @@ If acme_corp wants to redeem their tokens:
    - Locked Holding archived (tokens burned)
    - ExecutedBurn contract created (audit trail)
 
-## Path B — Bank-Initiated Burn (OfferBurn)
+## Step 5 — Off-Chain Finalization
 
-If the bank initiates the burn:
-
-1. Registrar exercises AllocationFactory_OfferBurn
-   - actAs: bank_registrar (registrar is controller)
-   - Args include: expectedAdmin, burn { instrumentId, amount, holder, reference, requestedAt, executeBefore }, extraArgs
-   - Note: OfferBurn does NOT take holdingCids — no Holdings are locked at offer time
-   - Submit via interactive submission — signed with canton-registrar key
-2. Result: BurnOffer contract created (signatory: provider, instrumentId.admin; observer: operator, burn.holder)
-
-3. Holder exercises BurnOffer_Accept (controller: burn.holder)
-   - actAs: acme_corp
-   - Args include: holdingCids (holder provides their Holdings at accept time), extraArgs
-   - Submit via interactive submission — signed with acme_corp's key
-4. Result:
-   - BurnOffer archived
-   - Holdings merged/split/burned directly (no locking step — unlike RequestBurn)
-   - ExecutedBurn contract created (audit trail)
-
-## Off-Chain Settlement (both paths)
-
-1. Orchestrator detects the archived Holding
-2. Internal Ledger records position as REDEEMED
-3. Core Banking credits the DDA and debits the Reserve Account
-4. Client receives fiat
+1. Orchestrator detects the ExecutedBurn event
+2. Internal Ledger updates position from SETTLED to REDEEMED
+3. Bank Portal notified — client sees updated on-chain balance
 
 # Summary — Who Signs What
 
 Verified from the actual Daml source in utility-registry-app-v0-0.7.0.dar:
 
-| Choice | Controller (from Daml source) | Who signs in our setup |
+| Choice | Controller (from Daml source) | Who signs in our flow |
 |---|---|---|
-| AllocationFactory_OfferMint | `registrar` | bank_registrar (canton-registrar key) |
-| AllocationFactory_RequestMint | `mint.holder` | acme_corp (not our flow) |
-| MintOffer_Accept | `mint.holder` | acme_corp (bank signs on their behalf) |
-| MintOffer_Cancel | `mint.instrumentId.admin` | bank_registrar |
+| AllocationFactory_RequestMint | `mint.holder` | bank_issuer (issuer is the holder in this step) |
 | MintRequest_Accept | `mint.instrumentId.admin` | bank_registrar |
-| MintRequest_Cancel | `mint.holder` | acme_corp |
-| AllocationFactory_OfferBurn | `registrar` | bank_registrar |
-| AllocationFactory_RequestBurn | `burn.holder` | acme_corp |
-| AllocationFactory_TransferInternal | `provider, registrar, sender` | bank + acme_corp |
+| TransferPreapproval (TransferFactory_Transfer) | `sender` (via interface) | bank_issuer + bank_registrar |
+| TransferPreapproval_Withdraw | `actor` (receiver or operator) | acme_corp or operator |
+| TransferPreapproval (burn transfer) | `sender` (via interface) | acme_corp + bank_registrar |
+| AllocationFactory_RequestBurn | `burn.holder` | bank_burner (BurnParty holds the tokens) |
+| BurnRequest_Accept | `burn.instrumentId.admin` | bank_registrar |
+| AllocationFactory_TransferInternal | `provider, registrar, sender` | bank + sender |
 
-In the bank-hosted model where we hold acme_corp's key in our Vault, the bank signs everything operationally. acme_corp's key is "needed" in the Daml sense (they're the controller), but the bank is the one actually calling Vault to sign.
+In this model, acme_corp's key is only needed for:
+- CredentialOffer_AcceptFree (one-time onboarding)
+- TransferPreapproval creation (one-time onboarding)
+- Transfer to BurnParty (when acme_corp redeems — standard transfer, no burn-specific permissions)
+
+Both mint and burn are symmetric bank-internal operations:
+- **Mint:** bank mints to itself (Issuer) → transfers out to client
+- **Burn:** client transfers in to bank (BurnParty) → bank burns from itself
+
+The client never needs `isIssuerOf` credentials — only `isHolderOf` for transfers.
