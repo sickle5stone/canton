@@ -44,15 +44,17 @@ This is done via the UserServiceRequest template (from `utility-credential-app-v
 
 1. Each of our parties creates a UserServiceRequest contract. The request only has the user as signatory — the operator is an observer, not a co-signer.
    - UserServiceRequest { operator, user } → signatory: user, observer: operator
+   - actAs: [user] — user is the only signatory
+   - Submit via interactive submission — signed with the respective party key (e.g. canton-issuer for Issuer)
 
 2. The operator then accepts via UserServiceRequest_Accept (controller: operator). This creates the UserService contract.
    - UserService { operator, user, dso } → signatory: operator, user
+   - actAs: [operator] — operator is the controller
+   - Submit via interactive submission — signed with operator key (NaaS participant node handles this)
 
 3. The co-signing happens implicitly — the UserService contract carries both signatories (operator + user), but the user only signed the request, not the accept.
 
-4. Submit via interactive submission — signed with the respective party key.
-
-5. Repeat for Provider_Registrar/Issuer/Burner.
+4. Repeat for Provider_Registrar/Issuer/Burner.
 
 # Provider/Registrar Onboarding
 
@@ -60,21 +62,28 @@ We now move on to setting up the Provider/Registrar, these are admin-like users 
 
 1. Provider_Registrar creates a ProviderServiceRequest contract.
    - ProviderServiceRequest { operator, provider } → signatory: provider, observer: operator
+   - actAs: [provider]
+   - Submit via interactive submission — signed with canton-registrar key (provider = registrar in our setup)
 
-2. Operator accepts via ProviderServiceRequest_Accept (controller: operator). The operator validates provider credentials against the OperatorConfiguration requirements.
-   - Submit via interactive submission — signed with provider key
+2. Operator accepts via ProviderServiceRequest_Accept (controller: operator).
+   - actAs: [operator]
+   - Submit via interactive submission — signed with operator key (NaaS participant node handles this)
    - Result: ProviderService contract created (signatory: operator, provider)
 
 3. Registrar creates a RegistrarServiceRequest contract.
    - RegistrarServiceRequest { operator, provider, registrar, createTransferRule, createAllocationFactory } → signatory: registrar, observer: provider, operator
    - Set createTransferRule and createAllocationFactory to `Some True` to auto-create these on accept
+   - actAs: [registrar]
+   - Submit via interactive submission — signed with canton-registrar key
 
-4. Provider accepts via ProviderService_AcceptRegistrarServiceRequest (controller: provider). The provider validates registrar credentials against the ProviderConfiguration requirements.
-   - Submit via interactive submission — signed with provider key
+4. Provider accepts via ProviderService_AcceptRegistrarServiceRequest (controller: provider).
+   - actAs: [provider]
+   - Submit via interactive submission — signed with canton-registrar key (provider = registrar in our setup)
    - Result: RegistrarService + TransferRule + AllocationFactory all created in one step (as of v0.6.0)
 
 5. Registrar creates InstrumentConfiguration via RegistrarService_CreateInstrumentConfiguration — defines the token (e.g. DEPO), the admin (registrar), and the credential requirements for issuers and holders.
-   - Submit via interactive submission — signed with registrar key
+   - actAs: [registrar]
+   - Submit via interactive submission — signed with canton-registrar key
 
 # Credential Issuance
 
@@ -84,8 +93,10 @@ Credentials are standing authorizations that allow parties to act as issuers or 
 
 1. Registrar (as a UserService user) exercises UserService_OfferFreeCredential to create a CredentialOffer for the Issuer party
    - CredentialOffer { operator, issuer: registrar, holder: issuer_party, claims: [{ isIssuerOf: "DEPO" }] } → signatory: operator, issuer; observer: holder
-   - Submit via interactive submission — signed with registrar key
+   - actAs: [registrar]
+   - Submit via interactive submission — signed with canton-registrar key
 2. Issuer accepts via CredentialOffer_AcceptFree (controller: holder)
+   - actAs: [issuer]
    - Submit via interactive submission — signed with canton-issuer key
 3. Result: Credential contract created (signatory: issuer, holder). Issuer is now authorized to mint DEPO tokens.
 
@@ -99,9 +110,11 @@ This is the onboarding step for an external counterparty like acme_corp.
 
 1. acme_corp passes the partyID to us via a secure channel
 2. Registrar exercises UserService_OfferFreeCredential to create a CredentialOffer for acme_corp with claims: `{ isHolderOf: "DEPO" }`
-   - Submit via interactive submission — signed with registrar key
-3. acme_corp accepts via CredentialOffer_AcceptFree (controller: holder) — signed with acme_corp's own key (this key resides with the client)
-   - Submitted by client
+   - actAs: [registrar]
+   - Submit via interactive submission — signed with canton-registrar key
+3. acme_corp accepts via CredentialOffer_AcceptFree (controller: holder)
+   - actAs: [acme_corp]
+   - Submit via interactive submission — signed with acme_corp's own key (this key resides with the client)
 4. Result: Credential contract created. acme_corp is now authorized to hold DEPO tokens.
 
 This is the **only** time acme_corp's key is needed during onboarding. The Credential contract serves as standing authorization for all future mints to acme_corp.
@@ -131,14 +144,14 @@ The Issuer requests a mint with itself as the holder. acme_corp is not involved 
    - Returns: AllocationFactory CID, InstrumentConfiguration CID, Issuer Credential CID(s), and disclosed contracts
 
 2. Orchestrator constructs an ExerciseCommand on the AllocationFactory with choice AllocationFactory_RequestMint
-   - actAs: bank_issuer (controller is mint.holder, and the issuer IS the holder in this step)
+   - actAs: [bank_issuer] — controller is `mint.holder`, and the issuer IS the holder in this step
    - mint.holder set to: bank_issuer (the issuer mints to itself first)
    - Args include: expectedAdmin, mint { instrumentId, amount, holder: bank_issuer, reference, requestedAt, executeBefore }, extraArgs with the choice context
 
 3. Submit via interactive submission:
-   - PrepareSubmission → get preparedTransactionHash
-   - Vault sign with canton-issuer key
-   - ExecuteSubmissionAndWait
+   - PrepareSubmission(commands, actAs: [bank_issuer]) → get prepared_transaction + prepared_transaction_hash
+   - Vault sign prepared_transaction_hash with canton-issuer key
+   - ExecuteSubmissionAndWait(prepared_transaction, party_signatures: [{ party: bank_issuer, signatures: [canton-issuer sig] }])
 
 4. Result: MintRequest contract created on-chain
    - signatories: provider, mint.holder (= bank_issuer)
@@ -152,13 +165,13 @@ The Registrar accepts the mint request. Controller is `mint.instrumentId.admin` 
    - Returns: InstrumentConfiguration CID, Issuer Credential CID(s), AppRewardConfiguration CID, and disclosed contracts
 
 2. Construct ExerciseCommand on MintRequest with choice MintRequest_Accept
-   - actAs: bank_registrar (instrumentId.admin is the controller)
+   - actAs: [bank_registrar] — controller is `mint.instrumentId.admin`
    - Args include the accept choice context (extraArgs)
 
 3. Submit via interactive submission:
-   - PrepareSubmission → get preparedTransactionHash
-   - Vault sign with canton-registrar key
-   - ExecuteSubmissionAndWait
+   - PrepareSubmission(commands, actAs: [bank_registrar]) → get prepared_transaction + prepared_transaction_hash
+   - Vault sign prepared_transaction_hash with canton-registrar key
+   - ExecuteSubmissionAndWait(prepared_transaction, party_signatures: [{ party: bank_registrar, signatures: [canton-registrar sig] }])
 
 4. Result:
    - MintRequest contract archived (consumed)
@@ -172,6 +185,7 @@ The Issuer now holds the minted tokens and transfers them to acme_corp. We use t
 **Prerequisite (one-time during onboarding):** acme_corp creates a TransferPreapproval contract:
 - TransferPreapproval { operator, receiver: acme_corp, instrumentAdmin: bank_registrar, instrumentAllowances: [{ id: "DEPO" }] }
 - signatory: acme_corp (receiver), observer: operator
+- actAs: [acme_corp] — receiver is the only signatory
 - Submit via interactive submission — signed with acme_corp's key
 - This serves as standing consent for future transfers of DEPO to acme_corp
 
@@ -179,9 +193,12 @@ The Issuer now holds the minted tokens and transfers them to acme_corp. We use t
 
 1. Orchestrator exercises the transfer via the TransferPreapproval contract (it implements the TransferFactory interface)
    - This calls TransferRule_DirectTransfer under the hood — one-shot, no receiver accept needed
-   - actAs: bank_issuer (sender) + provider + registrar
+   - actAs: [bank_issuer, provider, bank_registrar] — sender + TransferRule signatories
    - Args: sender = bank_issuer, receiver = acme_corp, instrumentId, amount, inputHoldingCids
-   - Submit via interactive submission — signed with canton-issuer key + canton-registrar key
+   - Submit via interactive submission:
+     - PrepareSubmission(commands, actAs: [bank_issuer, provider, bank_registrar]) → prepared_transaction + prepared_transaction_hash
+     - Vault sign prepared_transaction_hash with canton-issuer key AND canton-registrar key
+     - ExecuteSubmissionAndWait(prepared_transaction, party_signatures: [{ party: bank_issuer, signatures: [canton-issuer sig] }, { party: bank_registrar, signatures: [canton-registrar sig] }])
 
 2. Result:
    - Issuer's Holding archived
@@ -204,15 +221,20 @@ This is when acme_corp wants to transfer their Holding to another party. We don'
 
 1. acme_corp exercises the transfer choice on the AllocationFactory (AllocationFactory_TransferInternal)
    - controller: provider, registrar, transfer.sender — all three must authorize
-   - actAs: acme_corp (sender) + provider + registrar
-   - Submit via interactive submission — signed with acme_corp's key + canton-registrar key
-   - Note: acme_corp needs to coordinate with us for the registrar signature, or we provide a co-signing service
+   - actAs: [acme_corp, provider, bank_registrar] — sender + AllocationFactory signatories
+   - Submit via interactive submission:
+     - PrepareSubmission(commands, actAs: [acme_corp, provider, bank_registrar]) → prepared_transaction + prepared_transaction_hash
+     - Bank signs prepared_transaction_hash with canton-registrar key
+     - Bank sends prepared_transaction_hash to acme_corp's signing service → acme_corp signs with their KMS key
+     - ExecuteSubmissionAndWait(prepared_transaction, party_signatures: [{ party: acme_corp, signatures: [acme sig] }, { party: bank_registrar, signatures: [canton-registrar sig] }])
+   - Note: acme_corp needs to coordinate with us for the registrar signature — we provide a co-signing service
 
 2. Result: TransferOffer contract created
    - Original Holding locked (locker = registrar)
    - Remainder Holding created for acme_corp if partial
 
 3. Receiver accepts via TransferInstruction_Accept (controller: transfer.receiver)
+   - actAs: [receiver]
    - Submitted by the receiver — signed with receiver's key
    - Exercises TransferRule_TwoStepTransfer under the hood
    - Result: locked Holding archived, new Holding created for receiver
@@ -232,24 +254,31 @@ Clients do **not** receive `isIssuerOf` credentials. They only need `isHolderOf`
 1. Client initiates a "Move to Fiat" request in the Bank Portal
 2. Internal Ledger records the position as PENDING_REDEEM
 3. Event Bus emits a RedeemRequested domain event
-4. Token Orchestrator consumes the event and instructs the client to transfer
+4. Token Orchestrator consumes the event and notifies the client to initiate the on-chain transfer
 
 ## Step 2 — Transfer to BurnParty (on-chain)
 
-The client transfers their Holding to the bank-owned BurnParty via TransferPreapproval (same mechanism as the mint flow's Step 4, but in reverse).
+The client transfers their Holding to the bank-owned BurnParty via TransferPreapproval. Unlike the mint transfer (where the bank is the sender), here acme_corp is the sender — so the client initiates and signs, and the bank co-signs with the registrar key.
 
 **Prerequisite (one-time during onboarding):** BurnParty creates a TransferPreapproval contract:
 - TransferPreapproval { operator, receiver: bank_burner, instrumentAdmin: bank_registrar, instrumentAllowances: [{ id: "DEPO" }] }
 - signatory: bank_burner (receiver), observer: operator
+- actAs: [bank_burner] — receiver is the only signatory
 - Submit via interactive submission — signed with canton-burner key
 - This serves as standing consent for any client to transfer DEPO tokens to the BurnParty
 
-**Transfer step:**
+**Transfer step (client-initiated, co-signed):**
 
-1. Orchestrator exercises the transfer via the TransferPreapproval contract
-   - actAs: acme_corp (sender) + provider + registrar
+This is a client-driven transfer — acme_corp is the sender, so they must initiate and sign. The bank co-signs with the registrar key.
+
+1. acme_corp's system constructs a transfer via the TransferPreapproval contract (which bank_burner created during onboarding)
+   - actAs: [acme_corp, provider, bank_registrar] — sender + TransferRule signatories
    - Args: sender = acme_corp, receiver = bank_burner, instrumentId, amount, inputHoldingCids
-   - Submit via interactive submission — signed with acme_corp's key + canton-registrar key
+   - Submit via interactive submission:
+     - PrepareSubmission(commands, actAs: [acme_corp, provider, bank_registrar]) → prepared_transaction + prepared_transaction_hash
+     - acme_corp signs prepared_transaction_hash with their KMS key
+     - acme_corp sends prepared_transaction_hash to bank's co-signing service → bank signs with canton-registrar key
+     - ExecuteSubmissionAndWait(prepared_transaction, party_signatures: [{ party: acme_corp, signatures: [acme sig] }, { party: bank_registrar, signatures: [canton-registrar sig] }])
 
 2. Result:
    - acme_corp's Holding archived
@@ -269,14 +298,20 @@ The client transfers their Holding to the bank-owned BurnParty via TransferPreap
 The bank burns the tokens now held by BurnParty. This is a bank-internal operation — no client keys needed.
 
 1. BurnParty exercises AllocationFactory_RequestBurn on the AllocationFactory
-   - actAs: bank_burner (burn.holder is controller — BurnParty is the holder)
+   - actAs: [bank_burner] — controller is `burn.holder`, BurnParty is the holder
    - Args include: expectedAdmin, burn { instrumentId, amount, holder: bank_burner, reference, requestedAt, executeBefore }, holdingCids, extraArgs
-   - Submit via interactive submission — signed with canton-burner key
+   - Submit via interactive submission:
+     - PrepareSubmission(commands, actAs: [bank_burner]) → prepared_transaction + prepared_transaction_hash
+     - Vault sign prepared_transaction_hash with canton-burner key
+     - ExecuteSubmissionAndWait(prepared_transaction, party_signatures: [{ party: bank_burner, signatures: [canton-burner sig] }])
 2. Result: BurnRequest contract created + Holding is locked (locked with registrar as locker)
 
 3. Registrar exercises BurnRequest_Accept on the BurnRequest (controller: burn.instrumentId.admin)
-   - actAs: bank_registrar
-   - Submit via interactive submission — signed with canton-registrar key
+   - actAs: [bank_registrar]
+   - Submit via interactive submission:
+     - PrepareSubmission(commands, actAs: [bank_registrar]) → prepared_transaction + prepared_transaction_hash
+     - Vault sign prepared_transaction_hash with canton-registrar key
+     - ExecuteSubmissionAndWait(prepared_transaction, party_signatures: [{ party: bank_registrar, signatures: [canton-registrar sig] }])
 4. Result:
    - BurnRequest archived
    - Locked Holding archived (tokens burned)
@@ -292,16 +327,26 @@ The bank burns the tokens now held by BurnParty. This is a bank-internal operati
 
 Verified from the actual Daml source in utility-registry-app-v0-0.7.0.dar:
 
-| Choice | Controller (from Daml source) | Who signs in our flow |
-|---|---|---|
-| AllocationFactory_RequestMint | `mint.holder` | bank_issuer (issuer is the holder in this step) |
-| MintRequest_Accept | `mint.instrumentId.admin` | bank_registrar |
-| TransferPreapproval (TransferFactory_Transfer) | `sender` (via interface) | bank_issuer + bank_registrar |
-| TransferPreapproval_Withdraw | `actor` (receiver or operator) | acme_corp or operator |
-| TransferPreapproval (burn transfer) | `sender` (via interface) | acme_corp + bank_registrar |
-| AllocationFactory_RequestBurn | `burn.holder` | bank_burner (BurnParty holds the tokens) |
-| BurnRequest_Accept | `burn.instrumentId.admin` | bank_registrar |
-| AllocationFactory_TransferInternal | `provider, registrar, sender` | bank + sender |
+| Choice | Controller (from Daml source) | actAs | Who signs |
+|---|---|---|---|
+| UserServiceRequest (create) | — | [user] | respective party key |
+| UserServiceRequest_Accept | `operator` | [operator] | operator (NaaS) |
+| ProviderServiceRequest (create) | — | [provider] | canton-registrar |
+| ProviderServiceRequest_Accept | `operator` | [operator] | operator (NaaS) |
+| RegistrarServiceRequest (create) | — | [registrar] | canton-registrar |
+| ProviderService_AcceptRegistrarServiceRequest | `provider` | [provider] | canton-registrar |
+| RegistrarService_CreateInstrumentConfiguration | `registrar` | [registrar] | canton-registrar |
+| UserService_OfferFreeCredential | `user` (registrar as user) | [registrar] | canton-registrar |
+| CredentialOffer_AcceptFree | `holder` | [holder] | respective holder key |
+| AllocationFactory_RequestMint | `mint.holder` | [bank_issuer] | canton-issuer |
+| MintRequest_Accept | `mint.instrumentId.admin` | [bank_registrar] | canton-registrar |
+| TransferPreapproval (mint transfer) | sender (via interface) | [bank_issuer, provider, bank_registrar] | canton-issuer + canton-registrar |
+| TransferPreapproval (burn transfer) | sender (via interface) | [acme_corp, provider, bank_registrar] | acme_corp KMS + canton-registrar |
+| TransferPreapproval_Withdraw | `actor` (receiver or operator) | [actor] | acme_corp or operator |
+| AllocationFactory_TransferInternal | `provider, registrar, sender` | [sender, provider, bank_registrar] | sender KMS + canton-registrar |
+| TransferInstruction_Accept | `transfer.receiver` | [receiver] | receiver key |
+| AllocationFactory_RequestBurn | `burn.holder` | [bank_burner] | canton-burner |
+| BurnRequest_Accept | `burn.instrumentId.admin` | [bank_registrar] | canton-registrar |
 
 In this model, acme_corp's key is only needed for:
 - CredentialOffer_AcceptFree (one-time onboarding)
