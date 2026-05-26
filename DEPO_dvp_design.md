@@ -84,7 +84,7 @@ graph TB
     TW -->|"catalog (if built)<br/>refdata sync"| API
     CPBO -->|"disclosed contracts<br/>at allocate time"| DABACK
     DASETTLE -->|"disclosed contracts<br/>at settle time"| DABACK
-    ORCH -.->|"#7 settle-ready<br/>(IF DA expects push)"| DASETTLE
+    ORCH -.->|"notify? (mechanism UNKNOWN<br/>see Q9.3)"| DASETTLE
     DAOP -->|onboarding signatures| NODE
 
     classDef new fill:#fff3b0,stroke:#333
@@ -110,19 +110,30 @@ The original draft assumed we'd host an HTTPS endpoint for every disclosed-contr
 | 5 | **Credential issuance request workflow** | **You** | Prospective DEPO holders | KYC pipeline + ledger writes. Yours alone. |
 | 5b | **Allocation co-signing endpoint** (Pattern Z only) | **You** | Sender's orchestrator, per allocation | Optional. Required only if you choose Pattern Z over Pattern X (see §5.7). |
 | 6 | **DvP orchestrator** (service, not endpoint) | **You** | Watches ledger | Tracks DEPO-touching DvPs through their lifecycle. |
-| 7 | **DA settlement handoff** (client only) | **DA** | Your orchestrator POSTs | IF DA expects push notification. May not exist if DA polls. Pending §9 question 3. |
 
-**Net change vs original draft:** endpoints #2 and #3 are removed from your build pending DA confirmation. Endpoint #1 is conditional. Effort drops materially; three new must-ask questions for DA now block M0.
+> ⚠ **UNKNOWN — does DA require a settlement-trigger notification from tenants?**
+> Earlier drafts of this doc listed a `POST /settle-ready` integration point #7. That endpoint was speculative — no source artifact (Daml package, OpenAPI spec, repo doc) we have access to defines it. The Daml model only specifies that `Dvp_Settle` is controlled by DA's operator party; it is silent on what triggers DA to call it. Pure ledger subscription by DA's orchestrator is the simplest implementation consistent with the source, but we have not verified DA's actual approach. See §9 question 3.
+
+**Net change vs original draft:** endpoints #2 and #3 are removed from your build pending DA confirmation. Endpoint #1 is conditional. Integration point #7 is removed entirely (it was a hallucination). Effort drops materially; three must-ask questions for DA now block M0.
 
 ## 1.5 How `AllocationFactory` becomes visible to external submitters
 
-You do not "expose" your AllocationFactory through an HTTPS endpoint. Disclosure happens at the **synchronizer / ledger sync layer**, not the application layer.
+**What is verified from source:**
 
 1. **At onboarding:** `RegistrarServiceRequest_Accept` created your `AllocationFactory` and committed it to the shared synchronizer. Your participant signed it; DA's participant got an observer copy via ledger sync (operator is on the `observer` list — [AllocationFactory.daml:47](extracted-dars/daml-source/utility-registry-app-v0-0.7.0/utility-registry-app-v0-0.7.0-7a75ef6e69f69395a4e60919e228528bb8f3881150ccfde3f31bcc73864b18ab/Utility/Registry/App/V0/Service/AllocationFactory.daml#L47)). Same for every `InstrumentConfiguration`, `TransferRule`, `Credential` you sign.
 
-2. **At allocation time:** the sender's participant calls DA's operator backend asking for the disclosed contracts needed for an allocation. DA reads its own ACS, returns the `createdEventBlob`s. The blobs are cryptographically self-authenticating against the synchronizer's commitment proof.
+2. **The Daml source comment names DA's operator backend as the disclosure mechanism** — [AllocationFactory.daml:34-36](extracted-dars/daml-source/utility-registry-app-v0-0.7.0/utility-registry-app-v0-0.7.0-7a75ef6e69f69395a4e60919e228528bb8f3881150ccfde3f31bcc73864b18ab/Utility/Registry/App/V0/Service/AllocationFactory.daml#L34-L36):
+   > *"Instances of this template are disclosed via the operator backend."*
 
-3. **Your per-DvP obligation: almost nothing.** Don't archive the factory unintentionally. Issue credentials promptly. The rest is sync.
+**What is NOT verified (pending §9):**
+
+- The URL of DA's operator backend
+- The wire protocol (HTTP? gRPC?) and auth scheme
+- The exact response schema
+- Whether the backend exposes a generic "fetch disclosed contracts for choice X with these CIDs" endpoint or a per-choice endpoint
+- Whether tenants can or must register their factory contracts with DA via any explicit API call, or whether the observer-via-ledger-sync mechanism is the sum total of registration
+
+**What follows from the source comment, with the inference made explicit:** if disclosure is via DA's backend and the contracts are already on DA's participant via ledger sync, then on the tenant side per-DvP obligation appears to collapse to "don't archive your factory; issue credentials promptly." This conclusion is load-bearing on §9 question 2 being answered as expected.
 
 ## 1.6 Authority split (who signs, who submits, who discloses)
 
@@ -152,7 +163,7 @@ Three independent columns. The original draft collapsed "signs" and "submits"; t
 | Endpoint #5 (credential issuance request) | S–M | KYC pipeline integration |
 | Endpoint #5b (Pattern Z co-signing) | S–M, **only if Pattern Z chosen** | Reuses interactive-submission code from mint; multi-signer flow is new |
 | DvP orchestrator (#6) | M | Idempotent event handling, retry policy |
-| DA handoff client (#7) | XS, **conditional on §9 Q3** | DA exposes the URL + auth scheme |
+| Optional DA notification hook | XS, **only if §9 Q3 says one is required** | DA defines the URL + auth + schema |
 | Operational runbook updates | S | Includes JIT credential issuance policy |
 
 Critical path is DA's three open questions (§9), DA's onboarding throughput, and Blockdaemon's vetting SLA — not your code.
@@ -185,6 +196,111 @@ Critical path is DA's three open questions (§9), DA's onboarding throughput, an
 | **Disclosed contract** | A `createdEventBlob` passed alongside a Ledger API submission to grant the submitter visibility into a contract they are not a stakeholder on. Self-authenticating via synchronizer commitment proof. |
 | **Pattern X** | Allocation authority contributed via the sender's `Credential` signatures. Sender submits alone. No per-allocation runtime gate. |
 | **Pattern Z** | Allocation authority contributed via interactive co-sign through your `/allocations/prepare` endpoint. Your Vault signs every allocation. Supports runtime policy gates. |
+
+---
+
+# Section 2.5 — The asset instruments (concrete examples)
+
+Two real assets ride through the canonical scenario: **DEPO** (your bank-deposit token) and **SEC** (a security from a separate admin). They are not abstract — each is an on-ledger `InstrumentConfiguration` contract with the schema from [Instrument.daml:18-42](extracted-dars/daml-source/utility-registry-v0-0.6.0/utility-registry-v0-0.6.0-a236e8e22a3b5f199e37d5554e82bafd2df688f901de02b00be3964bdfa8c1ab/Utility/Registry/V0/Configuration/Instrument.daml#L18-L42). Both follow the same template; the values differ.
+
+## DEPO `InstrumentConfiguration` (yours)
+
+```
+template InstrumentConfiguration
+  with
+    operator = DA_OPERATOR
+    provider = BANK_PROVIDER       -- you
+    registrar = BANK_REGISTRAR     -- you
+    defaultIdentifier = InstrumentIdentifier {
+      source = BANK_REGISTRAR,
+      id = "DEPO"
+    }
+    additionalIdentifiers = []
+    issuerRequirements = [
+      PartyCredentialRequirement {
+        issuer = BANK_REGISTRAR,
+        requiredClaims = [("isIssuerOf", "DEPO")]
+      }
+    ]
+    holderRequirements = [
+      PartyCredentialRequirement {
+        issuer = BANK_REGISTRAR,
+        requiredClaims = [("isHolderOf", "DEPO")]
+      }
+    ]
+    providerAppRewardBeneficiaries = None
+  signatory provider, registrar
+  observer operator
+```
+
+**Meaning:**
+- `instrumentId` for any DEPO `Holding` will be `{admin = BANK_REGISTRAR, id = "DEPO"}`. This is the global identifier; party A's DEPO Holdings are tagged with this exact pair, and the `InstrumentConfiguration` is the only contract on the synchronizer with this `id`.
+- To **mint or burn** DEPO, the actor must hold a `Credential` signed by `BANK_REGISTRAR` carrying claim `("isIssuerOf", "DEPO")`.
+- To **transfer or receive** DEPO, the actor must hold a `Credential` signed by `BANK_REGISTRAR` carrying claim `("isHolderOf", "DEPO")`.
+- The contract is signed by you (provider + registrar). DA's operator party is observer — that observer link is what lets DA's backend disclose this contract to external submitters via ledger sync.
+
+## SEC `InstrumentConfiguration` (counterparty admin's)
+
+```
+template InstrumentConfiguration
+  with
+    operator = DA_OPERATOR
+    provider = SEC_PROVIDER          -- distinct entity, not you
+    registrar = SEC_REGISTRAR        -- distinct entity, not you
+    defaultIdentifier = InstrumentIdentifier {
+      source = SEC_REGISTRAR,
+      id = "SEC-XYZ-2026"            -- e.g. an ISIN-like local id
+    }
+    additionalIdentifiers = [
+      InstrumentIdentifier { source = SEC_REGISTRAR, id = "ISIN-US0378331005" }
+    ]
+    issuerRequirements = [
+      PartyCredentialRequirement {
+        issuer = SEC_REGISTRAR,
+        requiredClaims = [("isIssuerOf", "SEC-XYZ-2026")]
+      }
+    ]
+    holderRequirements = [
+      PartyCredentialRequirement {
+        issuer = SEC_REGISTRAR,
+        requiredClaims = [("isHolderOf", "SEC-XYZ-2026")]
+      }
+    ]
+    providerAppRewardBeneficiaries = None
+  signatory provider, registrar
+  observer operator
+```
+
+**Meaning:** structurally identical to DEPO, but every party reference flips. The SEC admin (not you) is provider+registrar, signs the contract, owns the credential issuance for `isHolderOf:SEC-XYZ-2026`. DA is observer on this one too — that's how DA's backend can disclose SEC contracts to your client when you receive SEC.
+
+## What this implies for the cross-admin DvP
+
+| Concern | DEPO leg | SEC leg |
+|---|---|---|
+| Whose `AllocationFactory` does the sender call? | Yours (`(operator, BANK_PROVIDER, BANK_REGISTRAR)`) | SEC admin's (`(operator, SEC_PROVIDER, SEC_REGISTRAR)`) |
+| Whose `InstrumentConfiguration` rides in the choice context? | DEPO's, fetched from DA backend | SEC's, fetched from DA backend |
+| Whose `Credential` does the choice validate? | DEPO holder credential signed by you | SEC holder credential signed by SEC admin |
+| Whose `TransferRule` does `Dvp_Settle` invoke? | Yours | SEC admin's |
+| Whose signature is on the resulting `Holding`? | yours + holder | SEC admin's + holder |
+
+Two independent trust chains, both rooted in DA's operator party as the shared observer/settlement authority. **Neither admin sees the other's signing keys, ACS, or credential issuance pipeline — they only see what DA's backend chooses to disclose to them.**
+
+## Parties involved in the canonical scenario
+
+```
+DA_OPERATOR             — Digital Asset (operator across both utilities)
+BANK_PROVIDER           — you
+BANK_REGISTRAR          — you (admin of DEPO)
+BANK_ISSUER             — you (holds isIssuerOf:DEPO, receives initial mint)
+SEC_PROVIDER            — counterparty asset admin
+SEC_REGISTRAR           — counterparty asset admin (admin of SEC-XYZ-2026)
+SEC_ISSUER              — counterparty asset admin (holds isIssuerOf:SEC-XYZ-2026)
+PARTY_A                 — your client; pays DEPO, receives SEC; holds isHolderOf:DEPO + isHolderOf:SEC-XYZ-2026
+PARTY_B                 — counterparty's client; pays SEC, receives DEPO; holds isHolderOf:SEC-XYZ-2026 + isHolderOf:DEPO
+TRADEWEB_BOT            — Tradeweb adapter user (Layer-1/2 delegated submission; no on-chain party of its own per §3.3)
+```
+
+Note that **PARTY_A needs an `isHolderOf:SEC-XYZ-2026` credential issued by SEC_REGISTRAR**, and **PARTY_B needs an `isHolderOf:DEPO` credential issued by you (BANK_REGISTRAR)**. Cross-issuance is mandatory because each party will *receive* the other's asset.
 
 ---
 
@@ -270,6 +386,8 @@ At this point nothing exists on any ledger. Tradeweb has decided that A and B ag
 
 There is **no on-chain "Tradeweb venue" template** in any utility DAR (confirmed by exhaustive search of all extracted packages). Two valid ways for the trade to land on-ledger:
 
+> ⚠ **UNVERIFIED:** Option α assumes Tradeweb integrates with DA via Canton's standard participant-level `actAs` delegation (JWT-based, configured at participant user-management level). This is the only on-source mechanism I can find that would let Tradeweb submit on A's or B's behalf — and it requires no Daml-level changes — but I have not seen documentation of Tradeweb's actual integration pattern with DA. It may use a different mechanism we don't know about. Treat Option α as an architectural possibility, not a confirmed design.
+
 **Option α — Tradeweb-as-submitter (delegated authority).** Tradeweb's adapter runs as a tenant on DA, holding submission authority delegated by A and B (granted out-of-band at venue onboarding; not modeled on-ledger). The adapter submits as A:
 
 ```
@@ -332,14 +450,13 @@ Provider+registrar authority is contributed via Pattern X or Pattern Z (§5.7). 
 
 DA observes both `DvpLegAllocation`s. Your orchestrator observes them too (you're signatory on the DEPO leg; you see the SEC leg via the parent `Dvp` if your party is observer there, otherwise only via DA's notification).
 
-## 3.5 Phase 4 — Settlement handoff
+## 3.5 Phase 4 — Settlement handoff (UNKNOWN MECHANISM)
 
-DA needs to know both legs are allocated. Two architectural sub-options, **and this is §9 question 3:**
-
-- **Sub-option ω — DA auto-detects.** DA's orchestrator subscribes to its own participant's update stream; when it sees both `DvpLegAllocation`s for a `Dvp`, it triggers settlement. You do nothing. Integration point #7 doesn't exist.
-- **Sub-option ψ — You notify.** DA exposes `POST /settle-ready`; you POST when your orchestrator sees both legs allocated.
-
-We can build to either; we cannot know which is real without asking DA.
+> ⚠ **The trigger mechanism for `Dvp_Settle` is not specified in any source we have access to.**
+>
+> The Daml model only proves that DA's operator party must submit `Dvp_Settle` ([Dvp.daml:81](extracted-dars/daml-source/utility-settlement-app-v1-1.2.0/utility-settlement-app-v1-1.2.0-f169e1d84c476cb1321eff8ac2aebc9ce1c6b20790db5e788ee4ca87256a0639/Utility/Settlement/App/V1/Model/Dvp.daml#L81)). It does not specify what makes DA decide to submit it. Possibilities consistent with the source include: DA's orchestrator subscribes to the ledger and auto-detects both legs allocated; or DA exposes a notification endpoint and expects tenants to ping it; or some other mechanism not yet documented. The earlier draft of this document named a `POST /settle-ready` endpoint and a three-way `ω/ψ/π` taxonomy — both invented. They have been removed.
+>
+> **This is §9 question 3.** Until DA answers, our default plan is: build the orchestrator (§6) to detect `READY_FOR_SETTLE` from the ledger, and add an outbound notification step ONLY if DA confirms one is needed.
 
 ## 3.6 Phase 5 — DA submits `Dvp_Settle` (atomic)
 
@@ -442,12 +559,8 @@ sequenceDiagram
     end
 
     rect rgba(100,150,255,0.10)
-    Note over DAS,YOU: PHASE 4 - settlement handoff (pick ONE option, pending Q9.3)
-    alt Sub-option omega: DA auto-detects
-        DAS->>DAS: notice both legs allocated for this Dvp
-    else Sub-option psi: you notify
-        YOU->>DAS: POST /settle-ready {dvpCid, allocationCids}
-    end
+    Note over DAS,YOU: PHASE 4 - settlement trigger (MECHANISM UNKNOWN, pending Q9.3)
+    Note over DAS: DA decides to call Dvp_Settle.<br/>How DA decides is not in any source we have:<br/>could be pure ledger subscription,<br/>could be a notification expected from tenants,<br/>could be something else. Asking DA.
     end
 
     rect rgba(176,255,176,0.4)
@@ -735,47 +848,40 @@ WEBHOOK to requesterContact when status changes
 
 **Build only if Pattern Z is chosen.** See §5.7 for the X-vs-Z decision.
 
+> ⚠ **The endpoint shape below is a sketch, not a copy from any spec.** Canton's `PrepareSubmission` / `ExecuteSubmissionAndWait` API exists ([Canton interactive submission docs](https://docs.daml.com/canton/usermanual/interactive_submission.html) — verify against your installed Canton version) but the wrapper shape your service exposes to senders is your design choice. The exact field names below are illustrative.
+
 ```
-POST /api/v1/depo/allocations/prepare
+POST /api/v1/depo/allocations/prepare    # your endpoint, your schema
 Auth: mTLS (sender's party in cert SAN)
 Request: {
-  dvpCid,
-  instrumentId: "DEPO",
-  sender,
-  receiver,
-  amount,
-  transferLegId,
-  inputHoldingCids: ["<cid>", ...],
-  requestedAt: "<RFC3339>"
+  dvpCid, instrumentId, sender, receiver, amount, transferLegId,
+  inputHoldingCids: ["<cid>", ...], requestedAt
 }
 
 Response 200: {
-  preparedTransactionHash,
-  preparedTransactionPayload: "<base64>",
-  providerSignature: "<base64>",
-  registrarSignature: "<base64>",
-  disclosedContracts: [...],   // factory + instrCfg + sender cred blobs we fetched on the caller's behalf
-  expiresAt: "<RFC3339>"
+  preparedTransactionPayload,   # opaque blob, format defined by Canton PrepareSubmission
+  providerSignature,
+  registrarSignature,
+  disclosedContracts,           # iff your service fetches them on caller's behalf
+  expiresAt                     # prepared transactions have a TTL
 }
-
-Response 4xx: { error, code, details }
 ```
 
-Your service:
+Your service (the operational steps, not the wire format):
 
 1. Validates the request against runtime policy (limits, sanctions freshness, time-of-day windows, dual-control over threshold).
-2. Fetches disclosed contracts from DA's operator backend (so the caller doesn't have to).
+2. Fetches disclosed contracts (from wherever DA's backend lives — see §1.5).
 3. Builds the `AllocationFactory_Allocate` payload.
-4. Calls Canton's `PrepareSubmission` on your participant — returns the prepared transaction.
-5. Pulls your Vault key(s) and signs the prepared transaction's hash.
-6. Returns the prepared transaction + your partial signature + disclosures to the caller.
+4. Calls Canton's `PrepareSubmission` on your participant.
+5. Signs the prepared transaction's hash with your Vault key(s).
+6. Returns the prepared transaction + your partial signature(s) + disclosures to the caller.
 
 The sender then:
 
 7. Has their own participant sign the same prepared transaction with their party key.
 8. Submits `ExecuteSubmissionAndWait` carrying both signature blobs.
 
-The committed transaction has all three controller signatures present in one atomic submission.
+The committed transaction has all three controller signatures present in one atomic submission. **Confirm the precise prepared-transaction structure and signature-aggregation rules against your installed Canton version before coding.**
 
 ## 5.6 Cross-cutting concerns
 
@@ -889,24 +995,16 @@ stateDiagram-v2
 
 Persistence: track each `Dvp`'s state by `dvpCid` in your service's database. Idempotency keys: `(dvpCid, transferLegId)` for allocation events; `dvpCid` for terminal states.
 
-**Note:** the `READY_FOR_SETTLE -> SETTLED` transition is driven by DA, not you. If sub-option ψ is real (§9 Q3), an intermediate `DA_NOTIFIED` state sits between `READY_FOR_SETTLE` and `SETTLED`.
+**Note:** the `READY_FOR_SETTLE -> SETTLED` transition is driven by DA, not you. If §9 Q3 reveals DA requires a notification, an intermediate `DA_NOTIFIED` state sits between `READY_FOR_SETTLE` and `SETTLED`.
 
-## 6.3 Settle handoff — sub-option ω vs ψ
+## 6.3 Settle handoff (MECHANISM UNKNOWN)
 
-**Sub-option ω (DA auto-detects):** orchestrator transitions to `READY_FOR_SETTLE`, then waits for `SettledDvp` to land. No outbound call to DA.
+The orchestrator transitions to `READY_FOR_SETTLE` when both legs' `DvpLegAllocation`s are observed. **What happens next is the §9 question 3 unknown.** The orchestrator's design must currently support both possibilities:
 
-**Sub-option ψ (you notify):** on entering `READY_FOR_SETTLE`, POST to DA:
+- **If DA auto-detects via ledger subscription:** the orchestrator simply waits for the `SettledDvp` event and transitions state. No outbound call required.
+- **If DA requires a notification from tenants:** an outbound HTTP call (URL, auth, schema all defined by DA) would be added at the `READY_FOR_SETTLE` transition.
 
-```
-POST <DA-URL>/api/v1/settle-ready
-Auth: <as agreed with DA>
-Body: {
-  dvpCid,
-  allocationCids: [ "<DEPO-leg>", "<OTHER-leg>" ]
-}
-```
-
-`extraArgss` are NOT included — DA's backend assembles them from its own ACS. (If DA's contract says tenants must pre-collect both legs' contexts and pass them in, the schema gets the `extraArgss: [...]` field added — see §9 Q3.)
+**Implementation guidance:** wire the orchestrator for the auto-detect case first. Add a feature-flagged outbound notifier hook that defaults to off. If DA's answer to §9 Q3 reveals notification is required, configure the hook with the schema DA publishes. Do not implement against my earlier invented `POST /settle-ready` shape — it was speculation.
 
 ## 6.4 Failure handling
 
@@ -916,7 +1014,7 @@ Body: {
 | Allocation reverts | Allocation event never lands within `allocateBefore` | Mark `ALLOCATE_FAILED`. Surface to counterparty contact via ops channel. |
 | `allocateBefore` passes with one leg missing | Time-based check in orchestrator | Trigger `Dvp_Cancel` request to DA (operator-only choice). |
 | `settleBefore` passes (not on-chain enforced) | Time-based check | Same as above. |
-| DA unreachable (sub-option ψ only) | HTTP error / timeout from §6.3 | Exponential backoff + retry. Persist `READY_FOR_SETTLE` state across restarts. |
+| DA unreachable (only if notification mechanism is required per §9 Q3) | HTTP error / timeout from §6.3 | Exponential backoff + retry. Persist `READY_FOR_SETTLE` state across restarts. |
 | DA backend unreachable for disclosed contracts | Sender's allocate fails | Surface to sender. Not your service's problem to fix; DA's SLA matter. |
 
 ---
@@ -931,7 +1029,7 @@ Body: {
 | #4 Credential pre-clearance | Counterparties, venues | mTLS or OAuth2, **plus** valid `dvpCid`/`proposalCid` reference to prevent fishing |
 | #5 Credential issuance request | Onboarding portal / venues | OAuth2 (per-tenant client credentials) |
 | #5b Allocation prepare-and-sign (Pattern Z) | Sender's orchestrator | mTLS (sender's party in cert SAN) |
-| Outbound to DA (#7, sub-option ψ) | You → DA | DA-prescribed |
+| Outbound to DA (only if §9 Q3 requires notification) | You → DA | DA-prescribed |
 
 ## 7.2 Per-tenant rate limiting
 
@@ -993,7 +1091,7 @@ Stateless API service can scale horizontally; orchestrator is singleton (or lead
 | **M2 — Catalog (conditional)** | Endpoint #1 live with OpenAPI spec — **only if §9 Q1 says we need it** | Counterparty can fetch DEPO refdata in one call |
 | **M3 — Pattern Z (conditional)** | Endpoint #5b live — **only if Pattern Z chosen** | Test DvP allocates against your factory via prepare-and-sign |
 | **M4 — Orchestrator** | DvP Orchestrator tracking state for sandbox DvPs | Full lifecycle (propose → settle) reaches `SETTLED` in sandbox without manual steps |
-| **M5 — DA handoff** | Sub-option ψ wired (or confirmed not needed) | First sandbox DvP settled via DA, end-to-end |
+| **M5 — DA handoff** | Either auto-detect confirmed working OR notification hook built to DA's spec | First sandbox DvP settled via DA, end-to-end |
 | **M6 — Hardening** | Auth, rate limiting, monitoring, runbooks | Production readiness review passed |
 | **M7 — Pilot** | First production DvP with one counterparty | One successful real settlement |
 
@@ -1007,7 +1105,7 @@ Critical path: M0 needs DA answers + Blockdaemon vetting. Everything else parall
 
 1. **Catalog API.** Does DA's operator backend already expose an instrument-catalog endpoint that returns the `InstrumentConfiguration` payload + disclosure blob? If yes, we don't build endpoint #1. If no, we build #1 as a refdata wrapper. Either way, what off-ledger fields (ISIN, CUSIP, settlement convention, contacts, prospectus URL) does Tradeweb expect that we'd need to layer on top?
 2. **Choice-context API.** Confirm DA's operator backend serves `AllocationFactory_Allocate` choice-context (disclosed contracts: factory, instrumentConfig, sender credential) to any submitter. Confirm URL, auth scheme, response shape. Confirm same for `Dvp_Settle` (transferRule, receiver credentials). If DA's actual deployment requires tenants to host their own disclosure proxies, we restore endpoints #2/#3 to the build.
-3. **Settle-ready notification.** Does DA's settlement orchestrator poll for fully-allocated DvPs (sub-option ω) or expect tenants to POST a notification (sub-option ψ)? If ψ, what URL / auth / payload shape? Does the body need to carry per-leg `extraArgss` or does DA assemble them from its own ACS?
+3. **Settlement trigger mechanism.** How does your settlement orchestrator decide when to submit `Dvp_Settle`? Possibilities consistent with the Daml model: (a) pure ledger subscription — your orchestrator observes both `DvpLegAllocation`s and acts autonomously; (b) a notification API tenants must call; (c) tenant polling of a DA status endpoint; (d) something else. **If a notification or polling API is required, please publish its URL, auth scheme, request/response schema.** We will not implement against a guessed shape.
 
 **Pre-pilot:**
 
